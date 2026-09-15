@@ -470,6 +470,9 @@ table.wtable tbody tr.click:hover{background:var(--surface-hover);}
 .mini-tile .k{font-size:11.5px;font-weight:600;text-transform:uppercase;color:var(--muted-2);margin-bottom:8px;}
 .mini-tile .v{font-size:26px;font-weight:600;letter-spacing:-0.6px;}
 
+/* Jednostka miary przy polu ilości w edytorze operacji (np. „kg"). */
+.op-line-unit{font-size:12.5px;color:var(--muted);flex:0 0 auto;min-width:26px;}
+
 /* ---------- bar chart (Statystyki) ---------- */
 .bar-chart{display:flex;flex-direction:column;gap:10px;}
 .bar-row{display:flex;align-items:center;gap:12px;}

@@ -775,12 +775,13 @@
       fields: () => `<div class="field-2">
         <label class="field"><span>Nazwa *</span><input name="name" placeholder="np. Zestaw powitalny"></label>
         <label class="field"><span>Kategoria</span><input name="category" value="Gadżet" placeholder="np. Gadżet"></label>
-      </div>`,
+      </div>
+      <label class="field"><span>Jednostka</span>${unitSelect('name="unit"')}</label>`,
       submit: async (data, ctx) => {
         if (!data.name) throw new Error('Podaj nazwę produktu.');
-        const res = await api('/warehouse/products', { method: 'POST', body: JSON.stringify({ name: data.name, category: data.category || 'Gadżet' }) });
+        const res = await api('/warehouse/products', { method: 'POST', body: JSON.stringify({ name: data.name, category: data.category || 'Gadżet', unit: data.unit }) });
         state.mag.formData = state.mag.formData || { items: [] };
-        (state.mag.formData.items = state.mag.formData.items || []).push({ itemCode: res.itemCode, name: res.name, category: res.category, onHand: 0, reserved: 0, available: 0 });
+        (state.mag.formData.items = state.mag.formData.items || []).push({ itemCode: res.itemCode, name: res.name, category: res.category, unit: res.unit, onHand: 0, reserved: 0, available: 0 });
         if (opEdit.lines[ctx.idx]) opEdit.lines[ctx.idx].targetItemCode = res.itemCode;
         renderOpLines();
         toast('Utworzono produkt: ' + res.name);
@@ -1666,6 +1667,30 @@
   }
   function fmtInt(n) { return Number(n || 0).toLocaleString('pl-PL'); }
   function fmtMoney(n) { return Number(n || 0).toLocaleString('pl-PL', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + ' zł'; }
+  // Ilość magazynowa: produkty na kg mają stany ułamkowe (9,5 kg), więc NIE fmtInt.
+  // Jednostka opcjonalna — w kolumnach tabel doklejamy ją, w sumach zbiorczych nie
+  // (suma sztuk i kilogramów nie ma sensu, więc zostaje samą liczbą).
+  function fmtQty(n, unit) {
+    const v = Number(n || 0).toLocaleString('pl-PL', { maximumFractionDigits: 3 });
+    return unit ? `${v} ${unit}` : v;
+  }
+  // Jednostka produktu po kodzie. Dokumenty nie trzymają jej w pozycji — czytamy
+  // z kartoteki, żeby zmiana jednostki nie wymagała przepisywania historii.
+  function unitList() {
+    return ((state.mag || {}).formData || {}).units || ['szt.', 'kg', 'l', 'm', 'opak.'];
+  }
+  function unitSelect(name, selected) {
+    const opts = unitList().map((u) => `<option value="${esc(u)}"${(selected || 'szt.') === u ? ' selected' : ''}>${esc(u)}</option>`).join('');
+    return `<select ${name}>${opts}</select>`;
+  }
+  function unitOf(code) {
+    if (!code) return '';
+    const mag = state.mag || {};
+    const fromForm = ((mag.formData || {}).items || []).find((i) => i.itemCode === code);
+    if (fromForm && fromForm.unit) return fromForm.unit;
+    const fromProd = (mag.products || []).find((p) => p.itemCode === code);
+    return (fromProd && fromProd.unit) || '';
+  }
   // Kwota w walucie licencji (PLN → „zł", inne → kod waluty). Kafle zbiorcze używają
   // fmtMoney (są już w PLN po przeliczeniu); pojedyncza licencja — swojej waluty.
   function fmtCur(n, cur) {
@@ -1727,7 +1752,7 @@
       state.mag.valuation = val; state.mag.locations = locs;
       const physical = locs.filter((l) => l.onHand > 0 || l.kind === 'internal' || l.kind === 'employee').length || locs.length;
       const sub = $('[data-mag-subtitle]');
-      if (sub) sub.textContent = `${fmtInt(val.totalQty)} szt. na stanie · ${fmtInt(val.productCount)} pozycji · ${fmtInt(locs.length)} lokalizacji · ${fmtMoney(val.totalValue)}`;
+      if (sub) sub.textContent = `${fmtQty(val.totalQty)} na stanie · ${fmtInt(val.productCount)} pozycji · ${fmtInt(locs.length)} lokalizacji · ${fmtMoney(val.totalValue)}`;
     } catch (_) { const sub = $('[data-mag-subtitle]'); if (sub) sub.textContent = 'Brak dostępu do magazynu.'; }
   }
 
@@ -1782,8 +1807,8 @@
           [{ t: 'Cel' }, { t: 'Poziom' }, { t: 'Dostępne', num: true }, { t: 'Minimum', num: true }, { t: 'Do zamówienia', num: true }],
           shortageItems.map((r) => ({ cells: [
             { v: r.label }, { v: r.scope === 'item' ? 'Sprzęt' : 'Kategoria', cls: 'mut' },
-            { v: fmtInt(r.available), cls: 'num' }, { v: fmtInt(r.minQty), cls: 'num' },
-            { html: `<strong>${fmtInt(r.toOrder)}</strong>`, cls: 'num' }
+            { v: fmtQty(r.available, r.unit), cls: 'num' }, { v: fmtQty(r.minQty, r.unit), cls: 'num' },
+            { html: `<strong>${fmtQty(r.toOrder, r.unit)}</strong>`, cls: 'num' }
           ] }))
         )}` : '';
       el.innerHTML = `<div class="anim-fadeup">${stats}<h3 style="margin:0 0 14px;font-size:16px;font-weight:600;color:var(--ink);">Operacje</h3><div class="op-cards">${cards}${replCard}</div>${shortage}</div>`;
@@ -1843,7 +1868,7 @@
 
   function renderOpReadonly(box, op) {
     const lines = (op.lines || []).map((l) =>
-      `<div class="team-eq"><div class="item"><span class="n">${esc(l.itemName || l.itemCode)}${l.targetName ? ' → ' + esc(l.targetName) : ''}</span><span class="l">${fmtInt(l.quantity != null ? l.quantity : l.countedQty)} szt.${l.unitPrice != null ? ' · ' + fmtMoney(l.unitPrice) : ''}</span></div></div>`).join('')
+      `<div class="team-eq"><div class="item"><span class="n">${esc(l.itemName || l.itemCode)}${l.targetName ? ' → ' + esc(l.targetName) : ''}</span><span class="l">${fmtQty(l.quantity != null ? l.quantity : l.countedQty, unitOf(l.itemCode))}${l.unitPrice != null ? ' · ' + fmtMoney(l.unitPrice) : ''}</span></div></div>`).join('')
       || '<p class="sub">Brak pozycji.</p>';
     const canReverse = op.state === 'done';
     box.innerHTML = `
@@ -1912,9 +1937,12 @@
       let extra = '';
       if (t === 'receipt') extra = `<input data-line-field="unitPrice" data-idx="${i}" type="number" min="0" step="0.01" value="${l.unitPrice != null ? l.unitPrice : ''}" placeholder="cena" style="width:80px;">`;
       else if (t === 'conversion') extra = `<select data-line-field="targetItemCode" data-idx="${i}" style="flex:1;min-width:120px;">${itemOpts(l.targetItemCode, false, true)}</select>`;
+      // step="any" + jednostka obok pola: produkty na kg mają stany ułamkowe.
+      const u = unitOf(l.itemCode);
+      const uTag = u ? `<span class="op-line-unit">${esc(u)}</span>` : '';
       const qtyField = t === 'adjustment'
-        ? `<input data-line-field="countedQty" data-idx="${i}" type="number" min="0" step="1" value="${l.countedQty != null ? l.countedQty : ''}" placeholder="policzono" style="width:90px;">`
-        : `<input data-line-field="quantity" data-idx="${i}" type="number" min="1" step="1" value="${l.quantity != null ? l.quantity : ''}" placeholder="ilość" style="width:80px;">`;
+        ? `<input data-line-field="countedQty" data-idx="${i}" type="number" min="0" step="any" value="${l.countedQty != null ? l.countedQty : ''}" placeholder="policzono" style="width:90px;">${uTag}`
+        : `<input data-line-field="quantity" data-idx="${i}" type="number" min="0" step="any" value="${l.quantity != null ? l.quantity : ''}" placeholder="ilość" style="width:80px;">${uTag}`;
       return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
         <select data-line-field="itemCode" data-idx="${i}" style="flex:1;min-width:140px;">${itemOpts(l.itemCode, t === 'conversion')}</select>
         ${t === 'conversion' ? extra : ''}${qtyField}${t === 'receipt' ? extra : ''}
@@ -1926,6 +1954,10 @@
     // Konwersja: wybór „＋ Nowy produkt…" w celu → szybkie utworzenie produktu.
     $$('[data-line-field="targetItemCode"]', wrap).forEach((sel) => sel.addEventListener('change', () => {
       if (sel.value === '__new__') { sel.value = ''; openQuickProduct(Number(sel.dataset.idx)); }
+    }));
+    // Zmiana produktu zmienia jednostkę przy polu ilości — przerysuj pozycje.
+    $$('[data-line-field="itemCode"]', wrap).forEach((sel) => sel.addEventListener('change', () => {
+      readOpLinesFromDOM(); renderOpLines();
     }));
   }
 
@@ -2010,7 +2042,7 @@
       list.innerHTML = tableHTML(cols,
         items.map((p) => ({ cells: [
           { v: p.itemCode, cls: 'mono-cell' }, { v: p.name }, { html: `<span class="chip chip-grey">${esc(p.category)}</span>` },
-          { v: fmtInt(p.quantity), cls: 'num' }, { v: p.batchCount ? fmtInt(p.batchCount) : '—', cls: 'num' }, { v: p.totalValue ? fmtMoney(p.totalValue) : '—', cls: 'num' }
+          { v: fmtQty(p.quantity, p.unit), cls: 'num' }, { v: p.batchCount ? fmtInt(p.batchCount) : '—', cls: 'num' }, { v: p.totalValue ? fmtMoney(p.totalValue) : '—', cls: 'num' }
         ].concat(isAdmin ? [{ html: `<button class="btn btn-ghost btn-sm" data-prod-edit="${esc(p.itemCode)}">Edytuj</button>`, cls: 'num' }] : []) }))
       );
     };
@@ -2045,7 +2077,7 @@
   const prodEdit = { id: null, code: null, batches: [] };
   function openProductEditor(code) {
     const p = (state.mag.products || []).find((x) => x.itemCode === code); if (!p) return;
-    prodEdit.id = p.id; prodEdit.code = p.itemCode;
+    prodEdit.id = p.id; prodEdit.code = p.itemCode; prodEdit.unit = p.unit || 'szt.';
     prodEdit.batches = (p.priceBatches || []).map((b) => ({ qty: b.qty, unitPrice: b.unitPrice, note: b.note }));
     const wrap = $('#drawer-wrap'); const box = $('#drawer'); wrap.classList.remove('hidden');
     box.innerHTML = `
@@ -2063,6 +2095,7 @@
             <label class="field"><span>Marka</span><input data-prod-f="brand" value="${esc(p.brand || '')}"></label>
             <label class="field"><span>Model</span><input data-prod-f="model" value="${esc(p.model || '')}"></label>
           </div>
+          <label class="field"><span>Jednostka</span>${unitSelect('data-prod-f="unit" data-prod-unit', p.unit)}</label>
           <label class="field"><span>Notatka</span><input data-prod-f="notes" value="${esc(p.notes || '')}"></label>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin:18px 0 8px;">
@@ -2076,6 +2109,8 @@
       </div>
       <div class="drawer-foot"><button class="btn btn-primary" style="flex:1;" data-prod-save>Zapisz</button><button class="btn btn-ghost" data-close-drawer>Zamknij</button></div>`;
     renderBatchRows();
+    const uSel = $('[data-prod-unit]');
+    if (uSel) uSel.addEventListener('change', () => { prodEdit.unit = uSel.value; readBatchesFromDOM(); renderBatchRows(); });
     loadProdHistory(p.itemCode);
   }
   function readBatchesFromDOM() {
@@ -2089,14 +2124,14 @@
   function renderBatchRows() {
     const box = $('[data-batch-rows]'); if (!box) return;
     box.innerHTML = prodEdit.batches.map((b, i) => `<div class="prod-batch-row" data-batch-row>
-      <input type="number" min="0" step="1" data-batch-qty value="${b.qty != null ? b.qty : ''}" placeholder="szt.">
+      <input type="number" min="0" step="any" data-batch-qty value="${b.qty != null ? b.qty : ''}" placeholder="${esc(prodEdit.unit || 'szt.')}">
       <input type="number" min="0" step="0.01" data-batch-price value="${b.unitPrice != null ? b.unitPrice : ''}" placeholder="cena/szt.">
       <input type="text" data-batch-note value="${esc(b.note || '')}" placeholder="notatka">
       <button class="btn btn-danger-ghost btn-sm" data-batch-del="${i}">×</button>
     </div>`).join('') || '<div class="eq-sub" style="padding:6px 0;">Brak partii — dodaj, by ustawić ilość i wartość.</div>';
     const total = prodEdit.batches.reduce((a, b) => a + (Number(b.qty) || 0), 0);
     const val = prodEdit.batches.reduce((a, b) => a + (Number(b.qty) || 0) * (Number(b.unitPrice) || 0), 0);
-    const t = $('[data-batch-total]'); if (t) t.textContent = `Łącznie: ${fmtInt(total)} szt. · wartość ${fmtMoney(val)}`;
+    const t = $('[data-batch-total]'); if (t) t.textContent = `Łącznie: ${fmtQty(total, prodEdit.unit || 'szt.')} · wartość ${fmtMoney(val)}`;
   }
   function loadProdHistory(code) {
     const box = $('[data-prod-history]'); if (!box) return;
@@ -2141,7 +2176,7 @@
           [{ t: 'Kod' }, { t: 'Nazwa' }, { t: 'Lokalizacja' }, { t: 'Ilość', num: true }, { t: 'Dostępne', num: true }],
           rows.map((r) => ({ cells: [
             { v: r.itemCode, cls: 'mono-cell' }, { v: r.name }, { v: r.locationName, cls: 'mut' },
-            { v: fmtInt(r.quantity), cls: 'num' }, { html: `<span style="color:#1B7A4F;font-weight:600;">${fmtInt(r.available)}</span>`, cls: 'num' }
+            { v: fmtQty(r.quantity, r.unit), cls: 'num' }, { html: `<span style="color:#1B7A4F;font-weight:600;">${fmtQty(r.available, r.unit)}</span>`, cls: 'num' }
           ] }))
         ) : emptyBlock('Brak stanu', '');
       } else if (id === 'valuation') {
@@ -2546,8 +2581,8 @@
           <button class="btn btn-danger-ghost btn-sm" data-rr-del="${esc(r.id)}">Usuń</button></div>` : '';
         return { cells: [
           { v: r.label }, { v: r.scope === 'item' ? 'Sprzęt' : 'Kategoria', cls: 'mut' },
-          { v: fmtInt(r.minQty), cls: 'num' }, { v: fmtInt(r.maxQty), cls: 'num' },
-          { v: fmtInt(r.available), cls: 'num' }, { html: `<strong>${r.toOrder > 0 ? fmtInt(r.toOrder) : '—'}</strong>`, cls: 'num' },
+          { v: fmtQty(r.minQty, r.unit), cls: 'num' }, { v: fmtQty(r.maxQty, r.unit), cls: 'num' },
+          { v: fmtQty(r.available, r.unit), cls: 'num' }, { html: `<strong>${r.toOrder > 0 ? fmtQty(r.toOrder, r.unit) : '—'}</strong>`, cls: 'num' },
           { html: statusChip }, { html: acts, cls: 'num' }
         ] };
       });
