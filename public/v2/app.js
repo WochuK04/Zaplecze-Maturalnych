@@ -105,7 +105,7 @@
   function showScreen(name) {
     state.screen = name;
     $('#boot').classList.add('hidden');
-    ['login', 'launcher', 'sprzet', 'magazyn', 'licencje', 'onboarding', 'settings'].forEach((s) => {
+    ['login', 'launcher', 'sprzet', 'magazyn', 'licencje', 'settings'].forEach((s) => {
       $('#screen-' + s).classList.toggle('hidden', s !== name);
     });
     if (name === 'login') { closeDrawer(); closeSheet(); }
@@ -201,14 +201,6 @@
     } catch (_) { /* brak dostępu */ }
   }
 
-  async function refreshOnboardingCounts() {
-    try {
-      const s = await api('/onboarding/summary');
-      $$('[data-stat="onbPct"]').forEach((n) => (n.textContent = s.pct + '%'));
-      $$('[data-stat="onbSteps"]').forEach((n) => (n.textContent = `${s.done}/${s.total}`));
-    } catch (_) { /* ignore */ }
-  }
-
   // -------------------------------------------------------------- Sprzęt views
   function setView(view) {
     state.view = view;
@@ -295,7 +287,7 @@
   }
 
   // Panel „Wymaga uwagi" (tylko admin): skonsolidowane alerty z /admin/alerts.
-  const ALERT_GO_VIEWS = ['magazyn', 'licencje', 'onboarding'];
+  const ALERT_GO_VIEWS = ['magazyn', 'licencje'];
   async function loadPulpitAlerts() {
     const panel = $('[data-pulpit-alerts]');
     if (!panel) return;
@@ -967,42 +959,6 @@
         toast('Zapisano dostęp.'); state.accesses = null; loadDostepy(); refreshLicenseCounts();
       }
     },
-    onbStep: {
-      eyebrow: 'Onboarding', title: (ctx) => ctx.id ? 'Edytuj krok' : 'Nowy krok',
-      hint: 'Krok pojawi się na liście onboardingu dla wszystkich osób.', cta: 'Zapisz',
-      fields: (ctx) => `
-        <label class="field"><span>Tytuł *</span><input name="title" value="${esc(ctx.title || '')}" placeholder="np. Skonfiguruj konto Google Workspace"></label>
-        <label class="field"><span>Opis</span><textarea name="description" rows="2" placeholder="Szczegóły / kontekst">${esc(ctx.description || '')}</textarea></label>
-        <div class="field-2">
-          <label class="field"><span>Kategoria</span><input name="category" value="${esc(ctx.category || '')}" placeholder="np. Konta i dostępy"></label>
-          <label class="field"><span>Kolejność</span><input name="sortOrder" type="number" step="1" value="${ctx.sortOrder != null ? ctx.sortOrder : ''}" placeholder="0"></label>
-        </div>
-        <label class="field"><span>Kto wykonuje</span><select name="owner">
-          <option value="self"${(ctx.owner || 'self') === 'self' ? ' selected' : ''}>Pracownik odhacza sam</option>
-          <option value="til"${ctx.owner === 'til' ? ' selected' : ''}>TiL — dostęp/sprzęt (prośba → przyznanie → potwierdzenie)</option>
-        </select></label>
-        <label class="field"><span>Link (opcjonalnie)</span><input name="url" value="${esc(ctx.url || '')}" placeholder="https://…"></label>`,
-      submit: async (data, ctx) => {
-        if (!data.title) throw new Error('Podaj tytuł kroku.');
-        if (ctx.id) await api('/onboarding/steps/' + encodeURIComponent(ctx.id), { method: 'PATCH', body: JSON.stringify(data) });
-        else await api('/onboarding/steps', { method: 'POST', body: JSON.stringify(data) });
-        toast('Zapisano krok.'); state.onb = null; loadOnboarding(); refreshOnboardingCounts();
-      }
-    },
-    onbStart: {
-      eyebrow: 'Onboarding', title: 'Rozpocznij onboarding',
-      hint: 'Osoba pojawi się w panelu i zacznie przechodzić checklistę TiL.', cta: 'Rozpocznij',
-      onOpen: async () => { if (!state.onbUsers) { try { state.onbUsers = await api('/admin/users'); } catch (_) { state.onbUsers = []; } } },
-      fields: () => {
-        const opts = (state.onbUsers || []).map((u) => `<option value="${esc(u.email)}">${esc(u.fullName || u.email)} (${esc(u.email)})</option>`).join('');
-        return `<label class="field"><span>Osoba *</span><select name="email"><option value="">— wybierz —</option>${opts}</select></label>`;
-      },
-      submit: async (data) => {
-        if (!data.email) throw new Error('Wybierz osobę.');
-        await api('/admin/onboarding/start', { method: 'POST', body: JSON.stringify({ email: data.email }) });
-        toast('Rozpoczęto onboarding.'); renderOnbPeople();
-      }
-    },
     twEvent: {
       eyebrow: 'Wyjazdy', title: (ctx) => ctx._id ? 'Edytuj wyjazd' : 'Nowy wyjazd',
       hint: 'Współrzędne uzupełnią się z listy miast, jeśli je zostawisz puste.', cta: 'Zapisz',
@@ -1369,7 +1325,7 @@
   const identityById = (id) => (state.identities || []).find((x) => x.id === id) || null;
   const entityById = (id) => (state.entities || []).find((x) => x.id === id) || null;
 
-  // Przełącznik zakładek „Mapy dostępów" (Licencje / Tożsamości) — wzór jak setOnbTab.
+  // Przełącznik zakładek „Mapy dostępów" (Licencje / Tożsamości).
   function setAccTab(tab) {
     state.accTab = tab;
     $$('[data-acc-tab]').forEach((b) => b.classList.toggle('active', b.getAttribute('data-acc-tab') === tab));
@@ -1607,156 +1563,6 @@
   function delAccess(id) {
     if (!confirm('Usunąć dostęp?')) return;
     api('/accesses/' + encodeURIComponent(id), { method: 'DELETE' }).then(() => { toast('Usunięto.'); state.accesses = null; loadDostepy(); refreshLicenseCounts(); }).catch((e) => toast(e.message || 'Nie udało się.', true));
-  }
-
-  // -------------------------------------------------------------- Onboarding
-  const CHECK_SVG = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>';
-
-  async function loadOnboarding() {
-    const list = $('[data-onb-list]'); const prog = $('[data-onb-progress]'); const sub = $('[data-onb-subtitle]');
-    const isAdmin = state.user && state.user.role === 'admin';
-    const render = () => {
-      const steps = state.onb || [];
-      const done = steps.filter((s) => s.done).length;
-      const total = steps.length;
-      const pct = total ? Math.round((done / total) * 100) : 0;
-      if (sub) sub.textContent = total ? `${done} z ${total} ${plural(total, 'kroku', 'kroków', 'kroków')} ukończonych` : 'Brak kroków onboardingu.';
-      if (prog) prog.innerHTML = `<div class="onb-progress-card">
-        <div class="onb-progress-head"><span class="pct">${pct}%</span><span class="lbl">${done} z ${total} kroków</span></div>
-        <div class="onb-bar"><div class="fill" style="width:${pct}%;"></div></div>
-      </div>`;
-      if (!total) { list.innerHTML = emptyBlock('Brak kroków', isAdmin ? 'Dodaj pierwszy krok przyciskiem „Dodaj krok”.' : 'Administrator jeszcze nie skonfigurował onboardingu.'); return; }
-      // group by category preserving order
-      const groups = [];
-      const idx = new Map();
-      steps.forEach((s) => {
-        const c = s.category || 'Ogólne';
-        if (!idx.has(c)) { idx.set(c, groups.length); groups.push({ cat: c, items: [] }); }
-        groups[idx.get(c)].items.push(s);
-      });
-      list.innerHTML = groups.map((g) => `<div class="onb-cat">${esc(g.cat)}</div>` + g.items.map((s) => {
-        const til = s.owner === 'til';
-        // Kółko: dla self klikalne (toggle); dla til tylko wskaźnik stanu (akcje niżej).
-        const check = til
-          ? `<div class="onb-check${s.done ? '' : ' onb-check-static'}">${CHECK_SVG}</div>`
-          : `<div class="onb-check" data-onb-toggle="${esc(s.id)}" data-done="${s.done ? '1' : '0'}">${CHECK_SVG}</div>`;
-        let action = '';
-        if (til) {
-          if (s.state === 'pending') action = `<button class="btn btn-ghost btn-sm" data-onb-request="${esc(s.id)}">Poproś o dostęp/sprzęt</button>`;
-          else if (s.state === 'requested') action = `<span class="chip chip-orange">Oczekuje na TiL</span>`;
-          else if (s.state === 'granted') action = `<button class="btn btn-primary btn-sm" data-onb-confirm="${esc(s.id)}">Potwierdź odbiór</button> <span class="chip chip-blue">TiL przyznał</span>`;
-          else if (s.state === 'confirmed') action = `<span class="chip chip-new">Potwierdzone</span> <button class="btn btn-danger-ghost btn-sm" data-onb-unconfirm="${esc(s.id)}">Cofnij</button>`;
-          action = `<div class="onb-actions" style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">${action}</div>`;
-        }
-        return `
-        <div class="onb-item${s.done ? ' done' : ''}">
-          ${check}
-          <div class="onb-body">
-            <div class="onb-title">${esc(s.title)}${til ? ' <span class="chip chip-grey" style="font-size:11px;">TiL</span>' : ''}</div>
-            ${s.description ? `<div class="onb-desc">${esc(s.description)}</div>` : ''}
-            ${s.url ? `<a class="onb-link" href="${esc(s.url)}" target="_blank" rel="noopener">Otwórz odnośnik →</a>` : ''}
-            ${action}
-          </div>
-          ${isAdmin ? `<div class="onb-admin"><button class="btn btn-ghost btn-sm" data-onb-edit="${esc(s.id)}">Edytuj</button><button class="btn btn-danger-ghost btn-sm" data-onb-del="${esc(s.id)}">Usuń</button></div>` : ''}
-        </div>`; }).join('')).join('');
-    };
-    if (state.onb) { render(); return; }
-    list.innerHTML = '<div class="loading">Ładowanie…</div>';
-    try { state.onb = await api('/onboarding'); render(); }
-    catch (e) { list.innerHTML = emptyBlock('Nie udało się wczytać', e.message || ''); }
-  }
-
-  async function toggleStep(id, currentlyDone) {
-    // optimistic
-    const step = (state.onb || []).find((s) => s.id === id);
-    if (step) step.done = !currentlyDone;
-    loadOnboarding();
-    try {
-      await api('/onboarding/' + encodeURIComponent(id) + '/toggle', { method: 'POST', body: JSON.stringify({ done: !currentlyDone }) });
-      refreshOnboardingCounts();
-    } catch (e) {
-      if (step) step.done = currentlyDone; loadOnboarding();
-      toast(e.message || 'Nie udało się.', true);
-    }
-  }
-
-  function delStep(id) {
-    if (!confirm('Usunąć ten krok onboardingu?')) return;
-    api('/onboarding/steps/' + encodeURIComponent(id), { method: 'DELETE' }).then(() => { toast('Usunięto.'); state.onb = null; loadOnboarding(); refreshOnboardingCounts(); }).catch((e) => toast(e.message || 'Nie udało się.', true));
-  }
-
-  // Akcja pracownika na kroku TiL (request/confirm/unconfirm). Optymistycznie —
-  // aktualizujemy stan w cache i przerysowujemy listę BEZ ponownego pobierania
-  // (żeby nie było przeładowania/spinnera); w razie błędu cofamy.
-  function onbTilAction(id, action) {
-    const step = (state.onb || []).find((s) => s.id === id);
-    if (!step) return;
-    const prev = { state: step.state, done: step.done };
-    if (action === 'request' && step.state === 'pending') step.state = 'requested';
-    else if (action === 'confirm' && step.state === 'granted') { step.state = 'confirmed'; step.done = true; }
-    else if (action === 'unconfirm' && step.state === 'confirmed') { step.state = 'granted'; step.done = false; }
-    else return;
-    loadOnboarding(); // re-render z cache
-    api('/onboarding/' + encodeURIComponent(id) + '/toggle', { method: 'POST', body: JSON.stringify({ action }) })
-      .then(() => refreshOnboardingCounts())
-      .catch((e) => { step.state = prev.state; step.done = prev.done; loadOnboarding(); toast(e.message || 'Nie udało się.', true); });
-  }
-
-  function setOnbTab(tab) {
-    $$('[data-onb-tab]').forEach((b) => b.classList.toggle('active', b.getAttribute('data-onb-tab') === tab));
-    $$('[data-onb-panel]').forEach((p) => (p.hidden = p.getAttribute('data-onb-panel') !== tab));
-    if (tab === 'osoby') renderOnbPeople();
-  }
-
-  // Panel admina/TiL: osoby w trakcie onboardingu + ich kroki; oznaczanie „przyznane".
-  async function renderOnbPeople() {
-    const box = $('[data-onb-panel="osoby"]'); if (!box) return;
-    box.innerHTML = '<div class="loading">Ładowanie…</div>';
-    try {
-      const data = await api('/admin/onboarding');
-      const stepsById = new Map(data.steps.map((s) => [s.id, s]));
-      const head = `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
-        <div class="eq-sub">${data.people.length} ${plural(data.people.length, 'osoba', 'osoby', 'osób')} w trakcie</div>
-        <button class="btn btn-primary btn-sm" data-onb-start><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>Rozpocznij onboarding</button></div>`;
-      if (!data.people.length) { box.innerHTML = head + emptyBlock('Nikt nie jest w trakcie onboardingu', 'Kliknij „Rozpocznij onboarding”, aby dodać osobę.'); return; }
-      box.innerHTML = head + data.people.map((p) => {
-        const rows = p.steps.map((st) => {
-          const s = stepsById.get(st.stepId) || {};
-          let right;
-          if (st.owner === 'til') {
-            if (st.state === 'requested') right = `<button class="btn btn-primary btn-sm" data-onb-grant="${esc(p.email)}|${esc(st.stepId)}">Przyznane / Wydane</button>`;
-            else if (st.state === 'granted') right = `<span class="chip chip-blue">Przyznane — czeka na potwierdzenie</span> <button class="btn btn-danger-ghost btn-sm" data-onb-revoke="${esc(p.email)}|${esc(st.stepId)}">Cofnij</button>`;
-            else if (st.state === 'confirmed') right = `<span class="chip chip-new">Potwierdzone</span>`;
-            else right = `<span class="chip chip-grey">Oczekuje na prośbę</span> <button class="btn btn-ghost btn-sm" data-onb-grant="${esc(p.email)}|${esc(st.stepId)}">Przyznaj od razu</button>`;
-          } else {
-            right = st.done ? `<span class="chip chip-new">Zrobione</span>` : `<span class="chip chip-grey">Nie zrobione</span>`;
-          }
-          return `<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:8px 0;border-top:1px solid var(--line);">
-            <div>${esc(s.title || st.stepId)}${st.owner === 'til' ? ' <span class="chip chip-grey" style="font-size:10px;">TiL</span>' : ''}</div>
-            <div style="flex-shrink:0;">${right}</div></div>`;
-        }).join('');
-        return `<div class="op-card" style="border-top-color:var(--blue);margin-bottom:14px;padding:16px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px;">
-            <div><div style="font-weight:600;color:var(--heading);">${esc(p.fullName)}</div><div class="eq-sub">${esc(p.email)}${p.startedAt ? ' · od ' + esc(fmtDate(p.startedAt)) : ''}</div></div>
-            <div style="display:flex;gap:12px;align-items:center;"><span style="font-weight:700;color:${p.pct === 100 ? 'var(--green)' : 'var(--blue)'};">${p.pct}%</span><button class="btn btn-ghost btn-sm" data-onb-finish="${esc(p.email)}">Zakończ</button></div>
-          </div>
-          <div class="onb-bar" style="margin-bottom:6px;"><div class="fill" style="width:${p.pct}%;"></div></div>
-          ${rows}
-        </div>`;
-      }).join('');
-    } catch (e) { box.innerHTML = emptyBlock('Nie udało się wczytać', e.message || ''); }
-  }
-
-  function onbGrant(pair, action) {
-    const [email, stepId] = String(pair).split('|');
-    api('/admin/onboarding/grant', { method: 'POST', body: JSON.stringify({ email, stepId, action }) })
-      .then(() => renderOnbPeople()).catch((e) => toast(e.message || 'Nie udało się.', true));
-  }
-
-  function onbFinish(email) {
-    if (!confirm('Zakończyć onboarding tej osoby? Zniknie z panelu.')) return;
-    api('/admin/onboarding/finish', { method: 'POST', body: JSON.stringify({ email }) })
-      .then(() => { toast('Zakończono onboarding.'); renderOnbPeople(); }).catch((e) => toast(e.message || 'Nie udało się.', true));
   }
 
   let currentSheet = null;
@@ -2616,8 +2422,7 @@
         offbSection('Licencje (miejsca)', d.seats, (l) => row(l.name, '')),
         offbSection('Licencje (właściciel biznesowy)', d.owned, (l) => row(l.name, 'zwolnimy właściciela')),
         accChecklist,
-        offbSection('Tożsamości — przenieś własność', d.ownedIdentities || [], (i) => row(i.address, 'wymaga przeniesienia')),
-        offbSection('Przyznane dostępy (onboarding)', d.accesses, (a) => row(a.title, a.state === 'confirmed' ? 'potwierdzony' : 'przyznany'))
+        offbSection('Tożsamości — przenieś własność', d.ownedIdentities || [], (i) => row(i.address, 'wymaga przeniesienia'))
       ].filter(Boolean).join('');
       const clean = d.total === 0;
       box.innerHTML = `
@@ -3095,7 +2900,7 @@
 
   // -------------------------------------------------------------- global events
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-go],[data-view],[data-sheet],[data-detail],[data-request],[data-transfer],[data-report],[data-return],[data-req-act],[data-req-cancel],[data-cmt-send],[data-notif-resolve],[data-sec-toggle],[data-rej-tab],[data-rej-csv],[data-user-new],[data-user-del],[data-user-offboard],[data-offb-finish],[data-close-drawer],[data-close-sheet],[data-soon],#sheetSubmit,[data-stop],[data-mag-tab],[data-mag-optab],[data-mag-report],[data-mag-op],[data-mag-csv],[data-mag-new-op],[data-mag-config-add],[data-op-addline],[data-op-delline],[data-op-save],[data-op-validate],[data-op-cancel],[data-op-reverse],[data-sup-edit],[data-sup-del],[data-loc-edit],[data-loc-del],[data-lic-new],[data-lic-detail],[data-lic-edit],[data-lic-del],[data-acc-tab],[data-acc-new],[data-acc-edit],[data-acc-del],[data-acc-bulk-apply],[data-idn-new],[data-idn-detail],[data-idn-edit],[data-idn-del],[data-onb-new],[data-onb-toggle],[data-onb-edit],[data-onb-del],[data-onb-tab],[data-onb-request],[data-onb-confirm],[data-onb-unconfirm],[data-onb-grant],[data-onb-revoke],[data-onb-start],[data-onb-finish],[data-theme-opt],[data-pref-toggle],[data-tw-new],[data-tw-edit],[data-tw-del],[data-twp-new],[data-twp-edit],[data-twp-del],[data-tw-return-mode],[data-ai-invoice],[data-ai-new],[data-ai-edit],[data-ai-transfer],[data-ai-discard],[data-ai-import],[data-ai-export],[data-rr-new],[data-rr-edit],[data-rr-del],[data-rr-replenish],[data-prod-new],[data-prod-edit],[data-prod-import],[data-batch-add],[data-batch-del],[data-prod-save],[data-health-recompute],[data-op-pdf],[data-dst-edit],[data-dst-del],[data-period-apply],[data-period-csv]');
+    const t = e.target.closest('[data-go],[data-view],[data-sheet],[data-detail],[data-request],[data-transfer],[data-report],[data-return],[data-req-act],[data-req-cancel],[data-cmt-send],[data-notif-resolve],[data-sec-toggle],[data-rej-tab],[data-rej-csv],[data-user-new],[data-user-del],[data-user-offboard],[data-offb-finish],[data-close-drawer],[data-close-sheet],[data-soon],#sheetSubmit,[data-stop],[data-mag-tab],[data-mag-optab],[data-mag-report],[data-mag-op],[data-mag-csv],[data-mag-new-op],[data-mag-config-add],[data-op-addline],[data-op-delline],[data-op-save],[data-op-validate],[data-op-cancel],[data-op-reverse],[data-sup-edit],[data-sup-del],[data-loc-edit],[data-loc-del],[data-lic-new],[data-lic-detail],[data-lic-edit],[data-lic-del],[data-acc-tab],[data-acc-new],[data-acc-edit],[data-acc-del],[data-acc-bulk-apply],[data-idn-new],[data-idn-detail],[data-idn-edit],[data-idn-del],[data-theme-opt],[data-pref-toggle],[data-tw-new],[data-tw-edit],[data-tw-del],[data-twp-new],[data-twp-edit],[data-twp-del],[data-tw-return-mode],[data-ai-invoice],[data-ai-new],[data-ai-edit],[data-ai-transfer],[data-ai-discard],[data-ai-import],[data-ai-export],[data-rr-new],[data-rr-edit],[data-rr-del],[data-rr-replenish],[data-prod-new],[data-prod-edit],[data-prod-import],[data-batch-add],[data-batch-del],[data-prod-save],[data-health-recompute],[data-op-pdf],[data-dst-edit],[data-dst-del],[data-period-apply],[data-period-csv]');
     if (!t) return;
 
     if (t.hasAttribute('data-rr-new')) { openSheet('reorderRule', {}); return; }
@@ -3135,18 +2940,6 @@
     if (t.hasAttribute('data-idn-detail')) { openIdentityDetail(t.getAttribute('data-idn-detail')); return; }
     if (t.hasAttribute('data-idn-edit')) { const i = (state.identities || []).find((x) => x.id === t.getAttribute('data-idn-edit')); openSheet('identity', i || {}); return; }
     if (t.hasAttribute('data-idn-del')) { delIdentity(t.getAttribute('data-idn-del')); return; }
-    if (t.hasAttribute('data-onb-new')) { openSheet('onbStep', {}); return; }
-    if (t.hasAttribute('data-onb-toggle')) { toggleStep(t.getAttribute('data-onb-toggle'), t.getAttribute('data-done') === '1'); return; }
-    if (t.hasAttribute('data-onb-edit')) { const s = (state.onb || []).find((x) => x.id === t.getAttribute('data-onb-edit')); openSheet('onbStep', s || {}); return; }
-    if (t.hasAttribute('data-onb-del')) { delStep(t.getAttribute('data-onb-del')); return; }
-    if (t.hasAttribute('data-onb-tab')) { setOnbTab(t.getAttribute('data-onb-tab')); return; }
-    if (t.hasAttribute('data-onb-request')) { onbTilAction(t.getAttribute('data-onb-request'), 'request'); return; }
-    if (t.hasAttribute('data-onb-confirm')) { onbTilAction(t.getAttribute('data-onb-confirm'), 'confirm'); return; }
-    if (t.hasAttribute('data-onb-unconfirm')) { onbTilAction(t.getAttribute('data-onb-unconfirm'), 'unconfirm'); return; }
-    if (t.hasAttribute('data-onb-grant')) { onbGrant(t.getAttribute('data-onb-grant'), 'grant'); return; }
-    if (t.hasAttribute('data-onb-revoke')) { onbGrant(t.getAttribute('data-onb-revoke'), 'revoke'); return; }
-    if (t.hasAttribute('data-onb-start')) { openSheet('onbStart', {}); return; }
-    if (t.hasAttribute('data-onb-finish')) { onbFinish(t.getAttribute('data-onb-finish')); return; }
 
     if (t.dataset.magTab) { setMagTab(t.dataset.magTab); return; }
     if (t.dataset.magOptab) { state.magOpType = t.dataset.magOptab; renderOperacje(); return; }
@@ -3189,7 +2982,6 @@
       if (g === 'sprzet') { showScreen('sprzet'); setView('pulpit'); }
       else if (g === 'magazyn') { showScreen('magazyn'); loadMagazyn(); }
       else if (g === 'licencje') { showScreen('licencje'); loadLicencje(); }
-      else if (g === 'onboarding') { showScreen('onboarding'); loadOnboarding(); }
       else showScreen(g === 'launcher' ? 'launcher' : g);
       return;
     }
@@ -3321,7 +3113,6 @@
         refreshCounts();
         refreshWarehouseCounts();
         refreshLicenseCounts();
-        refreshOnboardingCounts();
       } else {
         showScreen('login');
       }

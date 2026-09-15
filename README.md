@@ -1,6 +1,6 @@
 # Zaplecze Maturalni
 
-Wewnętrzny system Maturalni do zarządzania **sprzętem, magazynem, licencjami i onboardingiem** pracowników. Node.js + Express + MongoDB, front to vanilla-JS SPA. Uruchamiany jako aplikacja serverless na Vercelu (`export default app`), lokalnie jako klasyczny serwer HTTP.
+Wewnętrzny system Maturalni do zarządzania **sprzętem, magazynem i licencjami**. Node.js + Express + MongoDB, front to vanilla-JS SPA. Uruchamiany jako aplikacja serverless na Vercelu (`export default app`), lokalnie jako klasyczny serwer HTTP.
 
 ## Stack
 
@@ -54,7 +54,7 @@ Logowanie przez Google OAuth (`/auth/google`). Przy pierwszym logowaniu tworzy s
 
 Role (bramki w [`src/auth.js`](src/auth.js)):
 
-- **user** — pracownik: własny sprzęt, wnioski o wypożyczenie, onboarding
+- **user** — pracownik: własny sprzęt, wnioski o wypożyczenie
 - **manager** — dodatkowo akceptacja wniosków zespołu
 - **viewer** — wgląd read-only do magazynu
 - **admin** — pełne uprawnienia (magazyn, użytkownicy, konfiguracja)
@@ -66,7 +66,6 @@ Pierwszy admin (`k.woch@<domena>`) nadawany jest automatycznie; pozostałe role 
 - **Sprzęt** — rejestr sprzętu (per sztuka), wypożyczenia, zwroty, zgłaszanie usterek, transfery, historia
 - **Magazyn** — model w stylu Odoo: operacje jako dokumenty ze stanami, partie FIFO, wyceny stanu, rezerwacje, aging, reguły uzupełnień, dostawcy, lokalizacje, wydruki PDF
 - **Licencje** — ewidencja licencji/subskrypcji oprogramowania
-- **Onboarding (TiL)** — kroki dostępowo-sprzętowe, panel osób, śledzenie postępu
 - **Wyjazdy** — planowanie wyjazdów: mapa Polski, autobusy, interaktywna checklista pakowania zintegrowana ze stanem magazynu
 - **Administracja** — użytkownicy, powiadomienia, statystyki, dziennik audytu
 
@@ -84,7 +83,7 @@ src/
   person-email-map.js, manager-map.js
 public/             # SPA v1 (klasyczny interfejs, /v1)
 public/v2/          # SPA v2 (domyślny interfejs, /)
-scripts/            # import z Excela, migracje kodów, backfille, seed onboardingu
+scripts/            # import z Excela, migracje kodów, backfille
 test/               # testy node:test (jednostkowe stock.* + integracyjne warehouse.*/auth/loans)
 ```
 
