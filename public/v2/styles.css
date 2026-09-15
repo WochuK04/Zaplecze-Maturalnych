@@ -36,7 +36,6 @@
   --ink-2:#474C51;        /* drugorzędny ciemny tekst */
   --line-hover:#D6DEEA;   /* obramowanie przy hoverze */
   --scroll-thumb:#D1D9E2;
-  --onb-track:#F1EAE1;    /* tor paska postępu onboardingu */
 }
 
 /* ---------- Tryb ciemny (efektywny; „System” mapuje JS na light/dark) ---------- */
@@ -71,7 +70,6 @@
   --ink-2:#C2CBD8;
   --line-hover:#3A466B;
   --scroll-thumb:#2E3A57;
-  --onb-track:#2A2440;
 }
 
 *{box-sizing:border-box;}
@@ -471,29 +469,6 @@ table.wtable tbody tr.click:hover{background:var(--surface-hover);}
 .mini-tile{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:18px;}
 .mini-tile .k{font-size:11.5px;font-weight:600;text-transform:uppercase;color:var(--muted-2);margin-bottom:8px;}
 .mini-tile .v{font-size:26px;font-weight:600;letter-spacing:-0.6px;}
-
-/* ==========================================================================
-   ONBOARDING
-   ========================================================================== */
-.onb-progress-card{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:24px;margin-bottom:24px;}
-.onb-progress-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap;}
-.onb-progress-head .pct{font-size:32px;font-weight:600;letter-spacing:-1.2px;color:var(--orange);line-height:1;}
-.onb-progress-head .lbl{font-size:14px;color:var(--muted);}
-.onb-bar{height:12px;background:var(--onb-track);border-radius:9999px;overflow:hidden;}
-.onb-bar .fill{height:100%;background:var(--orange);border-radius:9999px;transition:width .4s cubic-bezier(.2,0,.2,1);}
-.onb-cat{font-size:12px;font-weight:600;text-transform:uppercase;color:var(--muted-2);letter-spacing:0.05em;margin:22px 0 10px;}
-.onb-item{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px 18px;display:flex;gap:14px;align-items:flex-start;margin-bottom:10px;transition:border-color .15s;}
-.onb-item:hover{border-color:var(--line-hover);}
-.onb-check{width:26px;height:26px;border-radius:8px;border:2px solid var(--line-2);flex-shrink:0;cursor:pointer;display:flex;align-items:center;justify-content:center;background:var(--surface);color:transparent;transition:all .15s;margin-top:1px;}
-.onb-item.done .onb-check{background:var(--green);border-color:var(--green);color:#fff;}
-.onb-check-static{cursor:default;}
-.onb-body{flex:1;min-width:0;}
-.onb-title{font-size:15px;font-weight:600;color:var(--ink);}
-.onb-item.done .onb-title{text-decoration:line-through;color:var(--muted-2);}
-.onb-desc{font-size:13px;color:var(--muted);margin-top:2px;line-height:1.5;}
-.onb-link{font-size:13px;color:var(--blue);margin-top:6px;display:inline-block;text-decoration:none;}
-.onb-link:hover{text-decoration:underline;}
-.onb-admin{display:flex;gap:6px;flex-shrink:0;}
 
 /* ---------- bar chart (Statystyki) ---------- */
 .bar-chart{display:flex;flex-direction:column;gap:10px;}
