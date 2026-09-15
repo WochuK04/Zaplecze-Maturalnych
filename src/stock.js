@@ -9,6 +9,7 @@
 // z serwera (getDb) jak i ze skryptów (własny MongoClient).
 
 import { ObjectId } from 'mongodb';
+import { normalizeQtyOrZero, isDiscreteUnit } from './lib/units.js';
 import { collections } from './schema.js';
 
 // Rodzaje lokalizacji (semantyka Odoo). Trzymamy w polu `kind`, żeby nie kolidować
@@ -672,7 +673,7 @@ async function applyReceiptPriceBatches(db, op, lines, preReceipt, now) {
     const code = String(ln.itemCode);
     if (!byCode.has(code)) byCode.set(code, []);
     byCode.get(code).push({
-      qty: Math.max(0, Math.floor(Number(ln.quantity) || 0)),
+      qty: normalizeQtyOrZero(ln.quantity),
       unitPrice: Math.max(0, Math.round((Number(ln.unitPrice) || 0) * 100) / 100)
     });
   }
@@ -745,7 +746,7 @@ async function applyConversionBatches(db, op, lines, preConv, now) {
   for (const ln of lines) {
     const sourceCode = String(ln.itemCode || '').trim();
     const targetCode = String(ln.targetItemCode || '').trim();
-    const qty = Math.max(0, Math.floor(Number(ln.quantity) || 0));
+    const qty = normalizeQtyOrZero(ln.quantity);
     if (!sourceCode || !targetCode || qty <= 0) continue;
 
     // Zdejmij qty FIFO; zbierz koszt i zdjęte partie (do cofnięcia).
@@ -792,7 +793,7 @@ async function consumeStockBatches(db, op, lines, preStock, now) {
 
   for (const ln of lines) {
     const code = String(ln.itemCode || '').trim();
-    const qty = Math.max(0, Math.floor(Number(ln.quantity) || 0));
+    const qty = normalizeQtyOrZero(ln.quantity);
     if (!code || qty <= 0) continue;
     const batches = productBatches(code);
     const { consumed } = fifoConsume(batches, qty);
@@ -986,7 +987,7 @@ export function reservedFromOperations(operations) {
     const loc = op.fromLocationId ? String(op.fromLocationId) : null;
     for (const ln of Array.isArray(op.lines) ? op.lines : []) {
       const code = String(ln?.itemCode || '').trim();
-      const qty = Math.max(0, Math.floor(Number(ln?.quantity) || 0));
+      const qty = normalizeQtyOrZero(ln?.quantity);
       if (!code || qty <= 0) continue;
       byItem.set(code, (byItem.get(code) || 0) + qty);
       if (loc) {
@@ -1023,7 +1024,7 @@ export function checkReservation(lines, onHandByItem, reservedByOthers) {
   const demand = new Map();
   for (const ln of Array.isArray(lines) ? lines : []) {
     const code = String(ln?.itemCode || '').trim();
-    const qty = Math.max(0, Math.floor(Number(ln?.quantity) || 0));
+    const qty = normalizeQtyOrZero(ln?.quantity);
     if (!code || qty <= 0) continue;
     demand.set(code, (demand.get(code) || 0) + qty);
   }
@@ -1107,10 +1108,11 @@ export async function computeReplenishment(db) {
   const itemCodes = rules.filter(r => r.scope === 'item').map(r => r.target);
   const items = itemCodes.length
     ? await db.collection(collections.items)
-        .find({ itemCode: { $in: itemCodes } }, { projection: { itemCode: 1, name: 1 } })
+        .find({ itemCode: { $in: itemCodes } }, { projection: { itemCode: 1, name: 1, unit: 1 } })
         .toArray()
     : [];
   const nameByCode = new Map(items.map(it => [it.itemCode, it.name || '']));
+  const unitByCode = new Map(items.map(it => [it.itemCode, it.unit || '']));
 
   return rules.map(r => {
     const isItem = r.scope === 'item';
@@ -1130,6 +1132,7 @@ export async function computeReplenishment(db) {
       scope: r.scope,
       target: r.target,
       itemName,
+      unit: isItem ? (unitByCode.get(r.target) || '') : '',
       label: isItem ? (itemName || r.target) : r.target,
       minQty,
       maxQty,
@@ -1153,7 +1156,11 @@ export function replenishmentDraft(row) {
   const r = row || {};
   if (r.scope !== 'item') return { eligible: false, reason: 'category' };
   if (!r.below) return { eligible: false, reason: 'not_below' };
-  const qty = Math.max(0, Math.floor(Number(r.toOrder) || 0));
+  // Sztuki i opakowania zaokrąglamy w dół (nie zamówimy 7,9 sztuki); kilogramy,
+  // litry i metry zostają ułamkowe. Brak jednostki = „szt.", więc produkty sprzed
+  // wprowadzenia pola zachowują dotychczasowe zachowanie.
+  const raw = normalizeQtyOrZero(r.toOrder);
+  const qty = isDiscreteUnit(r.unit) ? Math.floor(raw) : raw;
   if (qty <= 0) return { eligible: false, reason: 'zero' };
   return { eligible: true, line: { itemCode: r.target, quantity: qty } };
 }

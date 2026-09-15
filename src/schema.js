@@ -49,6 +49,8 @@ export const itemShape = {
   name: 'Logitech C920',
   details: 'Webcam Full HD',
   quantity: 1,
+  // Jednostka miary (Magazyn). Brak pola = „szt." — patrz src/lib/units.js.
+  unit: 'szt.',
   currentLocation: 'Magazyn',
   operationalStatus: 'available',
   conditionStatus: 'good',
