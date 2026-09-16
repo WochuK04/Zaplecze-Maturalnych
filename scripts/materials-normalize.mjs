@@ -266,6 +266,14 @@ for (const m of materials.values()) {
     m.legacyPubluuUrl = m.publishedUrl;
     m.publishedUrl = null; m.publishedHost = null;
   }
+  // Marka z `examType` niezależnie od tego, które źródło go wniosło. Wcześniej
+  // reguła działała tylko na eksporcie produkcyjnym, więc materiały obecne WYŁĄCZNIE
+  // w masterze platformowym (kolumna `egzamin`) zostawały bez marki — dotyczyło to
+  // 5 arkuszy próbnych CKE zdjętych już z platformy.
+  if (!m.brands.size && !m.isExternal) {
+    if (m.examType === 'matura') m.brands.add('Maturalni');
+    if (m.examType === 'primaryschoolexam') m.brands.add('KursyE8');
+  }
   if (!m.brands.size && !m.isExternal) {
     warn.push({ kind: 'brak-marki', platformId: m.platformId, detail: m.title });
   }
