@@ -17,11 +17,15 @@
  *
  * ── JAK URUCHOMIĆ ────────────────────────────────────────────────────────────
  * 1. Arkusz Google → Rozszerzenia → Apps Script → wklej ten plik.
- * 2. Usługi (+) → „Drive API" → v3 → Dodaj.   ← bez tego nie ma md5Checksum
+ * 2. Usługi (+) → „Drive API" → Dodaj (v3 zalecane, v2 też zadziała).
+ *    ← bez tej usługi nie ma md5Checksum; zwykłe DriveApp go nie udostępnia
  * 3. Ustaw KATALOGI_STARTOWE poniżej.
- * 4. Uruchom `startMapowania` (raz), potem `mapujDalej` tyle razy, ile trzeba.
+ * 4. Uruchom `diagnostyka` — sprawdzi usługę, wersję API i dostęp do katalogów.
+ * 5. Uruchom `startMapowania` (raz), potem `mapujDalej` tyle razy, ile trzeba.
  *    `postepMapowania` mówi, ile folderów zostało w kolejce.
- * 5. Zakładka „AllFiles" → Plik → Pobierz → CSV.
+ * 6. Zakładka „AllFiles" → Plik → Pobierz → CSV.
+ *
+ * Skrypt działa z Drive API v2 i v3 — wersję wykrywa sam i tłumaczy nazwy pól.
  */
 
 // Można podać kilka korzeni — materiały bywają w różnych miejscach.
@@ -35,6 +39,107 @@ var LIMIT_MS = 4.5 * 60 * 1000;
 
 var NAGLOWKI = ['path', 'file_name', 'file_id', 'md5', 'size_bytes', 'mime_type',
                 'created', 'modified', 'owner', 'last_editor', 'link'];
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ZGODNOŚĆ v2 / v3
+//
+// Usługa zaawansowana „Drive API" w Apps Script występuje w dwóch wersjach i mają
+// one RÓŻNE nazwy pól. To najczęstsza przyczyna komunikatu „Wystąpił nieznany błąd":
+// żądanie z polem `name` leci do v2, które zna tylko `title`, i API odrzuca je bez
+// czytelnego powodu.
+//
+//            v2                      v3
+//   nazwa    title                   name
+//   lista    items                   files
+//   limit    maxResults              pageSize
+//   daty     createdDate/            createdTime/
+//            modifiedDate            modifiedTime
+//   MIME     mimeType                mimeType          (tu zgodne)
+//   md5      md5Checksum             md5Checksum       (tu zgodne)
+//
+// Wersję wykrywamy raz, przy pierwszym użyciu, i dalej tłumaczymy pola.
+var _wersjaApi = null;
+
+function wersjaApi_() {
+  if (_wersjaApi) return _wersjaApi;
+  if (typeof Drive === 'undefined') {
+    throw new Error('Usługa „Drive API" nie jest dodana. Edytor → Usługi (+) → Drive API → Dodaj.');
+  }
+  try {
+    Drive.Files.list({ pageSize: 1, fields: 'files(id)' });
+    _wersjaApi = 3;
+  } catch (e) {
+    _wersjaApi = 2;
+  }
+  return _wersjaApi;
+}
+
+/** Nazwa pliku/folderu, niezależnie od wersji API. */
+function nazwaPliku_(f) { return f.name || f.title || ''; }
+
+/** Jedno żądanie listujące zawartość folderu; zwraca { pozycje, token }. */
+function listujFolder_(folderId, token) {
+  var q = "'" + folderId + "' in parents and trashed = false";
+  if (wersjaApi_() === 3) {
+    var o3 = Drive.Files.list({
+      q: q, pageSize: 1000, pageToken: token,
+      fields: 'nextPageToken, files(id,name,mimeType,md5Checksum,size,createdTime,'
+        + 'modifiedTime,owners(emailAddress),lastModifyingUser(emailAddress))',
+      supportsAllDrives: true, includeItemsFromAllDrives: true
+    });
+    return { pozycje: o3.files || [], token: o3.nextPageToken };
+  }
+  var o2 = Drive.Files.list({
+    q: q, maxResults: 1000, pageToken: token,
+    supportsAllDrives: true, includeItemsFromAllDrives: true
+  });
+  var poz = (o2.items || []).map(function (f) {
+    return {
+      id: f.id, name: f.title, mimeType: f.mimeType, md5Checksum: f.md5Checksum,
+      size: f.fileSize, createdTime: f.createdDate, modifiedTime: f.modifiedDate,
+      owners: f.owners, lastModifyingUser: f.lastModifyingUser
+    };
+  });
+  return { pozycje: poz, token: o2.nextPageToken };
+}
+
+/**
+ * URUCHOM TO NAJPIERW, gdy coś nie działa. Zamienia „nieznany błąd" w konkret.
+ */
+function diagnostyka() {
+  var linie = [];
+  if (typeof Drive === 'undefined') {
+    Logger.log('BŁĄD: usługa „Drive API" nie jest dodana.\n'
+      + 'Edytor Apps Script → Usługi (+) → Drive API → Dodaj.');
+    return;
+  }
+  linie.push('Usługa Drive: dodana');
+  var w;
+  try { w = wersjaApi_(); } catch (e) { Logger.log('BŁĄD: ' + e.message); return; }
+  linie.push('Wykryta wersja API: v' + w + (w === 2 ? '  (działa, pola tłumaczone)' : ''));
+
+  for (var i = 0; i < KATALOGI_STARTOWE.length; i++) {
+    var id = KATALOGI_STARTOWE[i];
+    try {
+      var f = (w === 3)
+        ? Drive.Files.get(id, { fields: 'id,name,mimeType', supportsAllDrives: true })
+        : Drive.Files.get(id, { supportsAllDrives: true });
+      var typ = f.mimeType === 'application/vnd.google-apps.folder' ? 'katalog' : 'NIE KATALOG';
+      linie.push('Katalog ' + id + ': „' + nazwaPliku_(f) + '" (' + typ + ')');
+      var probka = listujFolder_(id, null);
+      linie.push('  zawartość pierwszej strony: ' + probka.pozycje.length + ' pozycji');
+      var zMd5 = 0;
+      for (var k = 0; k < probka.pozycje.length; k++) if (probka.pozycje[k].md5Checksum) zMd5++;
+      linie.push('  z sumą kontrolną: ' + zMd5
+        + (zMd5 === 0 && probka.pozycje.length > 0
+            ? '  ← same podfoldery albo pliki Google (Dokumenty/Arkusze nie mają md5)' : ''));
+    } catch (e) {
+      linie.push('Katalog ' + id + ': BŁĄD — ' + e.message);
+      linie.push('  → sprawdź, czy identyfikator jest poprawny i czy masz dostęp z TEGO konta.');
+    }
+  }
+  Logger.log(linie.join('\n'));
+}
 
 function startMapowania() {
   var ss = SpreadsheetApp.getActive();
@@ -53,14 +158,19 @@ function startMapowania() {
     var id = KATALOGI_STARTOWE[i];
     var nazwa;
     try {
-      nazwa = Drive.Files.get(id, { fields: 'name', supportsAllDrives: true }).name;
+      var meta = (wersjaApi_() === 3)
+        ? Drive.Files.get(id, { fields: 'id,name', supportsAllDrives: true })
+        : Drive.Files.get(id, { supportsAllDrives: true });
+      nazwa = nazwaPliku_(meta);
     } catch (e) {
-      throw new Error('Nie mogę otworzyć katalogu ' + id + ': ' + e.message);
+      throw new Error('Nie mogę otworzyć katalogu ' + id + ': ' + e.message
+        + '  — uruchom `diagnostyka`, żeby zobaczyć, co dokładnie odmawia.');
     }
     wiersze.push([id, nazwa]);
   }
   kolejka.getRange(2, 1, wiersze.length, 2).setValues(wiersze);
-  kolejka.hideSheet();
+  // Ukrycie arkusza potrafi rzucić, gdy jest jedynym widocznym — to kosmetyka, nie błąd.
+  try { kolejka.hideSheet(); } catch (e) {}
 
   Logger.log('Kolejka zasiana (' + wiersze.length + ' katalogów). Uruchom `mapujDalej`.');
 }
@@ -110,26 +220,17 @@ function przejdzFolder_(folderId, path) {
   var token = null;
 
   do {
-    var odp = Drive.Files.list({
-      q: "'" + folderId + "' in parents and trashed = false",
-      fields: 'nextPageToken, files(id,name,mimeType,md5Checksum,size,createdTime,'
-        + 'modifiedTime,owners(emailAddress),lastModifyingUser(emailAddress))',
-      pageSize: 1000,
-      pageToken: token,
-      supportsAllDrives: true,
-      includeItemsFromAllDrives: true
-    });
-
-    var lista = odp.files || [];
+    var odp = listujFolder_(folderId, token);
+    var lista = odp.pozycje;
     for (var i = 0; i < lista.length; i++) {
       var f = lista[i];
       if (f.mimeType === 'application/vnd.google-apps.folder') {
-        foldery.push([f.id, path + '/' + f.name]);
+        foldery.push([f.id, path + '/' + nazwaPliku_(f)]);
         continue;
       }
       pliki.push([
         path,
-        f.name || '',
+        nazwaPliku_(f),
         f.id,
         f.md5Checksum || '',   // puste dla Dokumentów/Arkuszy Google — nie mają binarnej treści
         f.size || '',
@@ -141,7 +242,7 @@ function przejdzFolder_(folderId, path) {
         'https://drive.google.com/file/d/' + f.id + '/view'
       ]);
     }
-    token = odp.nextPageToken;
+    token = odp.token;
   } while (token);
 
   return { pliki: pliki, foldery: foldery };
