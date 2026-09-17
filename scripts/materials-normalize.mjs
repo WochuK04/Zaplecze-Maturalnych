@@ -95,6 +95,14 @@ const hostOf = (url) => {
   try { return new URL(url).hostname; } catch { return null; }
 };
 
+// Kilka wierszy eksportu ED ma przesunięte kolumny i do pola linku wpada wartość
+// z `zrodlo` („not-found", data). Bez tej bramki taki śmieć trafia do bazy jako
+// adres publikacji i grupuje ze sobą niepowiązane materiały.
+const jakoUrl = (v) => {
+  const s = String(v ?? '').trim();
+  return /^https?:\/\//i.test(s) ? s : null;
+};
+
 // Typ materiału siedzi w prefiksie nazwy (~60% zbioru); reszta to w większości
 // opracowania lektur, rozpoznawalne po wzorcu „Tytuł, Autor".
 const TYPE_PREFIXES = ['Prezentacja', 'Materiał dodatkowy', 'Plansza', 'Planer 100 dni',
@@ -160,6 +168,9 @@ function upsert(id, patch, source) {
       publishedUrl: null, publishedHost: null, sourceUrl: null, legacyPubluuUrl: null,
       purchaseType: null, paid: null, visible: null,
       rebranded: false, isExternal: false, published: false,
+      // Z mapowania Dysku (materials-drive-map.gs) — dokładane po scaleniu źródeł.
+      driveFileId: null, driveMd5: null, drivePath: null,
+      driveModified: null, driveOwner: null,
       sources: new Set()
     });
   }
@@ -230,7 +241,7 @@ for (const row of readCsv(path.join(SRC, 'lrs-prod.csv'))) {
   if (row.examType === 'primaryschoolexam') brands.push('KursyE8');
   upsert(id, {
     title: row.title, examType: row.examType,
-    publishedUrl: row.url || null, publishedHost: hostOf(row.url),
+    publishedUrl: jakoUrl(row.url), publishedHost: hostOf(row.url),
     purchaseType: row.purchaseType,
     paid: row.paid === 'true', visible: row.visible === 'true',
     published: true, brands
@@ -243,18 +254,56 @@ for (const row of readCsv(path.join(SRC, 'lrs-ed.csv'))) {
   if (!OID.test(id || '')) continue;
   const r = mapRow(row);
   const { subject, level } = splitSubject(row.przedmiot);
-  const host = hostOf(row.link);
+  const host = hostOf(jakoUrl(row.link));
   // zpe.gov.pl = Zintegrowana Platforma Edukacyjna, treść RZĄDOWA używana w kursach.
   // To nie jest nasz materiał — oznaczamy, nie wyrzucamy, bo wykorzystanie jest realne.
   const external = host === 'zpe.gov.pl';
   upsert(id, {
     title: row.nazwa, subject, level, grade: row.klasa,
-    publishedUrl: row.link || null, publishedHost: host,
+    publishedUrl: jakoUrl(row.link), publishedHost: host,
     createdAt: parseDate(row.data_stworzenia), updatedAt: parseDate(row.data_ostatniej_aktualizacji),
     published: true, isExternal: external,
     brands: external ? [] : ['Szkoła Maturalnych']
   }, 'prod-ed');
   addUsage(id, r, 'prod-ed');
+}
+
+// --- 5. Mapa Dysku (opcjonalna) ----------------------------------------------
+// Wynik `materials-drive-map.gs`. Daje trzy rzeczy, których nie ma w eksportach:
+// sumę kontrolną (czy dwa rekordy to ten sam plik), realną datę modyfikacji
+// (daty w masterze są wpisywane ręcznie) i ścieżkę w drzewie folderów.
+const DRIVE_XLSX = path.join(SRC, 'drive-map-komplet.xlsx');
+if (fs.existsSync(DRIVE_XLSX)) {
+  const wbD = xlsx.readFile(DRIVE_XLSX);
+  const arkusz = wbD.Sheets['AllFiles'];
+  const plikiDysku = arkusz ? xlsx.utils.sheet_to_json(arkusz, { defval: '' }) : [];
+  const poId = new Map(plikiDysku.map(r => [String(r.file_id), r]));
+
+  // fileId wyciągamy z linku do źródła — kolumna Dysku ma kilka formatów URL.
+  const WZORCE = [/\/file\/d\/([A-Za-z0-9_-]{20,})/, /\/(?:document|spreadsheets|presentation)\/d\/([A-Za-z0-9_-]{20,})/, /[?&]id=([A-Za-z0-9_-]{20,})/];
+  let dopasowane = 0, zepsute = 0;
+  for (const m of materials.values()) {
+    if (!m.sourceUrl) continue;
+    let fid = null;
+    for (const w of WZORCE) { const t = m.sourceUrl.match(w); if (t) { fid = t[1]; break; } }
+    if (!fid) continue;
+    m.driveFileId = fid;
+    const r = poId.get(fid);
+    if (!r) { zepsute++; continue; }   // wskaźnik istnieje, ale pliku nie ma → do kolejki „potwierdź"
+    dopasowane++;
+    m.driveMd5 = String(r.md5 || '') || null;
+    m.drivePath = String(r.path || '') || null;
+    m.driveModified = String(r.modified || '').slice(0, 10) || null;
+    m.driveOwner = String(r.owner || '') || null;
+    // Data z pliku jest wiarygodniejsza niż wpisywana ręcznie w arkuszu.
+    if (m.driveModified) m.updatedAt = m.driveModified;
+  }
+  console.log(`\n  mapa Dysku: ${plikiDysku.length} plików, dopasowano ${dopasowane}, zepsutych wskaźników ${zepsute}`);
+  for (const m of materials.values()) {
+    if (m.driveFileId && !m.driveMd5 && !m.isExternal) {
+      warn.push({ kind: 'wskaznik-dysku-zepsuty', platformId: m.platformId, detail: m.sourceUrl });
+    }
+  }
 }
 
 // --- domknięcia --------------------------------------------------------------
@@ -305,7 +354,8 @@ const csvCell = (v) => {
 };
 const COLS = ['platformId', 'title', 'brands', 'subject', 'level', 'grade', 'materialType',
   'createdAt', 'updatedAt', 'publishedUrl', 'publishedHost', 'sourceUrl',
-  'purchaseType', 'paid', 'visible', 'published', 'rebranded', 'isExternal', 'sources'];
+  'purchaseType', 'paid', 'visible', 'published', 'rebranded', 'isExternal',
+  'drivePath', 'driveMd5', 'driveModified', 'driveOwner', 'sources'];
 fs.writeFileSync(path.join(OUT, 'materialy.csv'),
   [COLS.join(','), ...asJson.map((m) => COLS.map((c) => csvCell(m[c])).join(','))].join('\n'));
 
