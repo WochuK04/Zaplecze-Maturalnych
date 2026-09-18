@@ -22,7 +22,19 @@ const uses = JSON.parse(fs.readFileSync(path.join(SRC, 'wykorzystania.json'), 'u
 const norm = (s) => (s || '').normalize('NFKD').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
 
 const own = mats.filter((m) => !m.isExternal);
-const flaga = new Map();   // platformId -> kod: 1 duplikat, 3 zły link, 4 równoległa kopia
+// Kody klasyfikacji. WAŻNE rozróżnienie: wspólny link do publikacji przy wspólnej
+// nazwie to NIE jest duplikat do scalenia. Jeden plik na Dysku, jeden flipbook
+// i kilka wpisów na platformie znaczy, że materiał jest używany w kilku miejscach,
+// a brak drugiego pliku to stan PRAWIDŁOWY — nie ma po co kopiować pliku, skoro
+// publikacja jest jedna. Dotyczy 366 z 372 takich grup, z czego 258 faktycznie
+// wisi w różnych kursach. Scalenie zgubiłoby informację o powtórnym użyciu.
+const KOD = {
+  REUZYCIE: 1,        // ten sam plik w kilku miejscach — stan prawidłowy
+  ZLY_LINK: 3,        // jeden link, różne tytuły — podejrzenie złego odnośnika
+  ROWNOLEGLA: 4,      // ta sama nazwa, osobny plik dla drugiego produktu
+  ROZJAZD: 5          // różne pliki pod jednym flipbookiem — publikacja ≠ plik
+};
+const flaga = new Map();
 const grupa = new Map();   // platformId -> [platformId rodzeństwa]
 
 const zapisz = (czlonkowie, kod) => {
@@ -41,7 +53,13 @@ for (const m of own) if (m.publishedUrl) {
   poLinku.get(m.publishedUrl).push(m);
 }
 for (const v of poLinku.values()) {
-  if (v.length > 1) zapisz(v, new Set(v.map((m) => norm(m.title))).size > 1 ? 3 : 1);
+  if (v.length < 2) continue;
+  if (new Set(v.map((m) => norm(m.title))).size > 1) { zapisz(v, KOD.ZLY_LINK); continue; }
+  // Ta sama nazwa i ten sam flipbook. Rozstrzyga liczba RÓŻNYCH plików na Dysku:
+  // jeden (albo żaden po drugiej stronie) = powtórne użycie; kilka różnych = rozjazd
+  // między tym, co opublikowane, a tym, co leży w plikach.
+  const md5 = new Set(v.map((m) => m.driveMd5).filter(Boolean));
+  zapisz(v, md5.size > 1 ? KOD.ROZJAZD : KOD.REUZYCIE);
 }
 
 // Ta sama nazwa i przedmiot, różne linki — rozstrzyga suma kontrolna pliku.
@@ -58,7 +76,7 @@ for (const v of poNazwie.values()) {
   if (new Set(v.map((m) => m.publishedUrl).filter(Boolean)).size < 2) continue;
   const md5 = new Set(v.map((m) => m.driveMd5).filter(Boolean));
   const zeSuma = v.filter((m) => m.driveMd5).length;
-  zapisz(v, md5.size === 1 && zeSuma > 1 ? 1 : 4);
+  zapisz(v, md5.size === 1 && zeSuma > 1 ? KOD.REUZYCIE : KOD.ROWNOLEGLA);
 }
 
 const BRANDS = ['Maturalni', 'KursyE8', 'Szkoła Maturalnych'];
@@ -91,6 +109,7 @@ const ile = (kod) => rows.filter((r) => r[17] === kod).length;
 const grup = (kod) => new Set(rows.filter((r) => r[17] === kod)
   .map((r) => [r[0], ...r[21]].sort().join('|'))).size;
 console.log(`data.js → ${OUT}  (${Math.round(fs.statSync(path.join(OUT, 'data.js')).size / 1024)} KB)`);
-console.log(`  duplikat rekordu:   ${String(ile(1)).padStart(4)} rekordów w ${grup(1)} grupach`);
-console.log(`  równoległa kopia:   ${String(ile(4)).padStart(4)} rekordów w ${grup(4)} grupach`);
-console.log(`  jeden link, różne tytuły: ${ile(3)} rekordów w ${grup(3)} grupach`);
+console.log(`  ten sam plik w kilku miejscach: ${String(ile(1)).padStart(4)} rekordów w ${grup(1)} grupach`);
+console.log(`  równoległa kopia:               ${String(ile(4)).padStart(4)} rekordów w ${grup(4)} grupach`);
+console.log(`  publikacja ≠ plik:              ${String(ile(5)).padStart(4)} rekordów w ${grup(5)} grupach`);
+console.log(`  jeden link, różne tytuły:       ${String(ile(3)).padStart(4)} rekordów w ${grup(3)} grupach`);
