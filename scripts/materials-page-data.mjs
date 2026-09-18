@@ -34,6 +34,23 @@ const KOD = {
   ROWNOLEGLA: 4,      // ta sama nazwa, osobny plik dla drugiego produktu
   ROZJAZD: 5          // różne pliki pod jednym flipbookiem — publikacja ≠ plik
 };
+
+// Numer na początku nazwy pliku na Dysku to POZYCJA W PROGRAMIE: klasa i numer
+// lekcji („2.17 Narządy zmysłów.pdf" = klasa 2, lekcja 17). Dwa różne numery znaczą,
+// że ludzie wpisali te pliki w dwa różne miejsca programu — podstawa klasa 2 kontra
+// rozszerzenie klasa 3 — więc to DWA RÓŻNE materiały o tym samym temacie, a nie
+// kopia jednego. Sumy kontrolne to potwierdzają: pliki mają inne md5 i inny rozmiar.
+//
+// Numeru wymagamy od KAŻDEGO członka grupy — brak numeru to brak dowodu, nie dowód
+// przeciwny. Dzięki temu zostają oznaczone chemiczne „Lekcja podsumowująca", gdzie
+// plik z ED i plik z kursu mają identyczną nazwę bez numeru, a różnią się rozmiarem:
+// to jest prawdziwa równoległa kopia.
+const NUMER_LEKCJI = /^\s*(\d{1,2})[.,](\d{1,2})\.?\s+\S/;
+const numerLekcji = (m) => {
+  const t = NUMER_LEKCJI.exec(m.driveName || '');
+  return t ? `${t[1]}.${t[2]}` : null;
+};
+
 const flaga = new Map();
 const grupa = new Map();   // platformId -> [platformId rodzeństwa]
 
@@ -89,8 +106,32 @@ for (const v of poNazwie.values()) {
 
   const md5 = new Set(v.map((m) => m.driveMd5).filter(Boolean));
   const zeSuma = v.filter((m) => m.driveMd5).length;
-  zapisz(v, md5.size === 1 && zeSuma > 1 ? KOD.REUZYCIE : KOD.ROWNOLEGLA);
+  // Jeden plik pod dwoma wpisami — powtórne użycie, niezależnie od numeracji.
+  if (md5.size === 1 && zeSuma > 1) { zapisz(v, KOD.REUZYCIE); continue; }
+
+  // Osobne pliki wpisane w osobne miejsca programu = osobne materiały. Nie kopia.
+  const numery = v.map(numerLekcji);
+  if (numery.every(Boolean) && new Set(numery).size > 1) continue;
+
+  zapisz(v, KOD.ROWNOLEGLA);
 }
+
+// Podgląd na platformie: adres to origin marki + stała ścieżka + ID platformy.
+// Do przeglądarki wysyłamy same indeksy platform, a URL składa strona — 1621 pełnych
+// adresów waży 110 KB, indeksy nic.
+const PODGLAD_SCIEZKA = '/materialy/flippingbook/';
+const platformy = [];
+for (const m of mats) {
+  for (const p of m.previewUrls || []) {
+    const origin = p.url.slice(0, p.url.indexOf(PODGLAD_SCIEZKA));
+    if (!platformy.some(([b]) => b === p.brand)) platformy.push([p.brand, origin]);
+  }
+}
+// [indeks platformy, ID rekordu, przez który idzie podgląd albo '' gdy własny]. Materiały
+// Szkoły Maturalnych nie istnieją na platformie Maturalnych, więc ich podgląd prowadzi do
+// bliźniaczego rekordu z tym samym plikiem — strona musi to powiedzieć wprost.
+const podglady = (m) => (m.previewUrls || [])
+  .map((p) => [platformy.findIndex(([b]) => b === p.brand), p.viaId || '', p.via || '']);
 
 const BRANDS = ['Maturalni', 'KursyE8', 'Szkoła Maturalnych'];
 const pula = (v) => [...new Set(v.filter(Boolean))].sort();
@@ -111,12 +152,14 @@ const rows = mats.map((m) => [
   m.purchaseType || '', m.paid === true ? 1 : m.paid === false ? 0 : -1,
   m.published ? 1 : 0, m.rebranded ? 1 : 0, m.isExternal ? 1 : 0,
   wykorzystania.get(m.platformId) || [], flaga.get(m.platformId) || 0,
-  m.drivePath || '', (m.derived || []).join(','), m.driveMd5 || '', grupa.get(m.platformId) || []
+  m.drivePath || '', (m.derived || []).join(','), m.driveMd5 || '', grupa.get(m.platformId) || [],
+  podglady(m)
 ]);
 
 fs.mkdirSync(OUT, { recursive: true });
 fs.writeFileSync(path.join(OUT, 'data.js'),
-  'window.MAT=' + JSON.stringify({ BRANDS, subjects, types, courses, rows }) + ';');
+  'window.MAT=' + JSON.stringify({ BRANDS, subjects, types, courses, rows,
+    podglad: { sciezka: PODGLAD_SCIEZKA, platformy } }) + ';');
 
 const ile = (kod) => rows.filter((r) => r[17] === kod).length;
 const grup = (kod) => new Set(rows.filter((r) => r[17] === kod)
@@ -126,3 +169,4 @@ console.log(`  ten sam plik w kilku miejscach: ${String(ile(1)).padStart(4)} rek
 console.log(`  równoległa kopia:               ${String(ile(4)).padStart(4)} rekordów w ${grup(4)} grupach`);
 console.log(`  publikacja ≠ plik:              ${String(ile(5)).padStart(4)} rekordów w ${grup(5)} grupach`);
 console.log(`  jeden link, różne tytuły:       ${String(ile(3)).padStart(4)} rekordów w ${grup(3)} grupach`);
+console.log(`  podgląd na platformie:          ${String(rows.filter((r) => r[22].length).length).padStart(4)} rekordów (${platformy.map(([b]) => b).join(', ')})`);

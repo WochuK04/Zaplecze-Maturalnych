@@ -103,6 +103,39 @@ const jakoUrl = (v) => {
   return /^https?:\/\//i.test(s) ? s : null;
 };
 
+// ---------------------------------------------------------------- podgląd na platformie
+//
+// Każda marka ma własne wdrożenie platformy, ale ścieżka jest ta sama, a w adresie
+// siedzi ID PLATFORMY (to samo ObjectId, którym scalamy źródła) — nie ID flipbooka:
+//   https://platforma.maturalni.com/materialy/flippingbook/69e8e17ac093f138fe50c53e
+// Domena bierze się z tego, w którym eksporcie produkcyjnym rekord występuje:
+// eksport platformowy rozdziela `examType` na maturę i E8, eksport ED to Szkoła
+// Maturalnych. Materiał obecny w obu eksportach dostaje dwa linki.
+const PLATFORMY = {
+  Maturalni: 'https://platforma.maturalni.com',
+  KursyE8: 'https://platforma.kursye8.pl',
+  // TODO: domena Szkoły Maturalnych — nieznana na 18.09.2026. Wpisanie jej tutaj
+  // to jedyna zmiana potrzebna, żeby 2364 materiały ED dostały link.
+  'Szkoła Maturalnych': null
+};
+const SCIEZKA_PODGLADU = '/materialy/flippingbook/';
+
+// Podgląd budujemy wyłącznie dla materiałów hostowanych na FlippingBooku — ścieżka
+// obiecuje flipbooka, a ZPE (treść rządowa) i Azure Blob to inne rzeczy.
+function markiPlatformy(m) {
+  if (!m.sources.has('prod-platforma')) return [];
+  if (m.examType === 'matura') return ['Maturalni'];
+  if (m.examType === 'primaryschoolexam') return ['KursyE8'];
+  return [];
+}
+
+function podglady(m) {
+  if (m.publishedHost !== 'online.flippingbook.com') return [];
+  return markiPlatformy(m)
+    .filter((b) => PLATFORMY[b])
+    .map((b) => ({ brand: b, url: PLATFORMY[b] + SCIEZKA_PODGLADU + m.platformId }));
+}
+
 // Typ materiału siedzi w prefiksie nazwy (~60% zbioru); reszta to w większości
 // opracowania lektur, rozpoznawalne po wzorcu „Tytuł, Autor".
 const TYPE_PREFIXES = ['Prezentacja', 'Materiał dodatkowy', 'Plansza', 'Planer 100 dni',
@@ -168,8 +201,10 @@ function upsert(id, patch, source) {
       publishedUrl: null, publishedHost: null, sourceUrl: null, legacyPubluuUrl: null,
       purchaseType: null, paid: null, visible: null,
       rebranded: false, isExternal: false, published: false,
+      // Adresy „zobacz na platformie" — wyprowadzone na końcu, patrz `podglady()`.
+      previewUrls: [],
       // Z mapowania Dysku (materials-drive-map.gs) — dokładane po scaleniu źródeł.
-      driveFileId: null, driveMd5: null, drivePath: null,
+      driveFileId: null, driveMd5: null, drivePath: null, driveName: null,
       driveModified: null, driveOwner: null,
       // Które pola pochodzą z wnioskowania ze ścieżki, a nie z eksportu.
       derived: [],
@@ -295,6 +330,10 @@ if (fs.existsSync(DRIVE_XLSX)) {
     dopasowane++;
     m.driveMd5 = String(r.md5 || '') || null;
     m.drivePath = String(r.path || '') || null;
+    // Nazwa pliku niesie numer lekcji („2.17 Narządy zmysłów") — pozycję w programie,
+    // której nie ma w żadnym eksporcie. Rozstrzyga, czy dwa wpisy o tej samej nazwie
+    // to jeden materiał, czy dwa różne (patrz materials-page-data.mjs).
+    m.driveName = String(r.file_name || '') || null;
     m.driveModified = String(r.modified || '').slice(0, 10) || null;
     m.driveOwner = String(r.owner || '') || null;
     // Data z pliku jest wiarygodniejsza niż wpisywana ręcznie w arkuszu.
@@ -331,6 +370,35 @@ for (const m of materials.values()) {
   if (!m.publishedUrl && !m.sourceUrl && !m.isExternal) {
     warn.push({ kind: 'brak-jakiegokolwiek-linku', platformId: m.platformId, detail: m.title });
   }
+}
+
+for (const m of materials.values()) m.previewUrls = podglady(m);
+
+// Szkoła Maturalnych ma własną platformę, z dużo gorszym podglądem, a jej materiały nie
+// istnieją w bazie Maturalnych — sprawdzone po ID na publicznym `learning-resources`:
+// 50 losowych ED dało 50× 404, kontrola 13/15 na 200. ALE bardzo często ten sam PLIK wisi
+// równolegle na Maturalnych, więc szukamy bliźniaka: najpierw ten sam flipbook (dokładnie
+// ta sama publikacja), potem ta sama suma kontrolna pliku. Znajdziemy — pokazujemy podgląd
+// bliźniaka. Nie znajdziemy — nie pokazujemy nic; gorszy podgląd Szkoły nie jest wart linku.
+const poLinkuPlatforma = new Map();
+const poMd5Platforma = new Map();
+for (const m of materials.values()) {
+  if (!markiPlatformy(m).length || m.publishedHost !== 'online.flippingbook.com') continue;
+  if (m.publishedUrl && !poLinkuPlatforma.has(m.publishedUrl)) poLinkuPlatforma.set(m.publishedUrl, m);
+  if (m.driveMd5 && !poMd5Platforma.has(m.driveMd5)) poMd5Platforma.set(m.driveMd5, m);
+}
+for (const m of materials.values()) {
+  if (m.previewUrls.length || m.isExternal) continue;
+  const blizniak = (m.publishedUrl && poLinkuPlatforma.get(m.publishedUrl))
+    || (m.driveMd5 && poMd5Platforma.get(m.driveMd5)) || null;
+  if (!blizniak || blizniak.platformId === m.platformId) continue;
+  m.previewUrls = markiPlatformy(blizniak)
+    .filter((b) => PLATFORMY[b])
+    .map((b) => ({
+      brand: b, url: PLATFORMY[b] + SCIEZKA_PODGLADU + blizniak.platformId,
+      viaId: blizniak.platformId,
+      via: m.publishedUrl && poLinkuPlatforma.get(m.publishedUrl) ? 'ta sama publikacja' : 'ten sam plik'
+    }));
 }
 
 // --- Uzupełnienia ze ŚCIEŻKI na Dysku (PO rozpoznaniu typu z nazwy) -------------------------------------
@@ -393,13 +461,14 @@ fs.writeFileSync(path.join(OUT, 'wykorzystania.json'), JSON.stringify(usagesUniq
 fs.writeFileSync(path.join(OUT, 'ostrzezenia.json'), JSON.stringify(warn, null, 2));
 
 const csvCell = (v) => {
-  const s = v === null || v === undefined ? '' : Array.isArray(v) ? v.join('; ') : String(v);
+  const s = v === null || v === undefined ? '' : Array.isArray(v)
+    ? v.map((x) => (x && typeof x === 'object' ? x.url : x)).join('; ') : String(v);
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 };
 const COLS = ['platformId', 'title', 'brands', 'subject', 'level', 'grade', 'materialType',
-  'createdAt', 'updatedAt', 'publishedUrl', 'publishedHost', 'sourceUrl',
+  'createdAt', 'updatedAt', 'publishedUrl', 'publishedHost', 'sourceUrl', 'previewUrls',
   'purchaseType', 'paid', 'visible', 'published', 'rebranded', 'isExternal',
-  'drivePath', 'driveMd5', 'driveModified', 'driveOwner', 'derived', 'sources'];
+  'drivePath', 'driveName', 'driveMd5', 'driveModified', 'driveOwner', 'derived', 'sources'];
 fs.writeFileSync(path.join(OUT, 'materialy.csv'),
   [COLS.join(','), ...asJson.map((m) => COLS.map((c) => csvCell(m[c])).join(','))].join('\n'));
 
@@ -424,6 +493,7 @@ for (const [label, fn] of [
   ['data aktualizacji', (m) => m.updatedAt],
   ['żywy link do publikacji', (m) => m.publishedUrl],
   ['link do źródła (Dysk)', (m) => m.sourceUrl],
+  ['podgląd na platformie', (m) => m.previewUrls.length],
   ['zastosowanie (typ zakupu)', (m) => m.purchaseType],
   ['opublikowany', (m) => m.published],
   ['po rebrandingu', (m) => m.rebranded],
