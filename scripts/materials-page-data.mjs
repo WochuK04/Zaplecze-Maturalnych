@@ -74,6 +74,19 @@ for (const m of own) {
 for (const v of poNazwie.values()) {
   if (v.length < 2) continue;
   if (new Set(v.map((m) => m.publishedUrl).filter(Boolean)).size < 2) continue;
+
+  // RÓŻNY EGZAMIN = różny materiał, nawet przy identycznym tytule. „Arkusz od
+  // egzaminatora CKE (matematyka)" istnieje osobno dla matury i osobno dla E8 —
+  // ścieżki na Dysku mówią to wprost („MATERIAŁY MATURA" kontra „MATERIAŁY E8").
+  // Takich grup nie oznaczamy w ogóle, bo nie są żadną formą kopii.
+  //
+  // UWAGA: nie testujemy tego po MARCE. Marka bywa wyprowadzona z jednego źródła,
+  // więc ten sam materiał używany w kursie i w Edukacji domowej ma marki rozłączne
+  // („Maturalni" kontra „Szkoła Maturalnych") — a to jest właśnie równoległa kopia,
+  // którą chcemy widzieć. Rozstrzyga `examType`: matura kontra primaryschoolexam.
+  const egzaminy = new Set(v.map((m) => m.examType).filter(Boolean));
+  if (egzaminy.size > 1) continue;
+
   const md5 = new Set(v.map((m) => m.driveMd5).filter(Boolean));
   const zeSuma = v.filter((m) => m.driveMd5).length;
   zapisz(v, md5.size === 1 && zeSuma > 1 ? KOD.REUZYCIE : KOD.ROWNOLEGLA);
