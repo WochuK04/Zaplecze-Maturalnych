@@ -786,6 +786,72 @@
         toast('Utworzono produkt: ' + res.name);
       }
     },
+    magInvoice: {
+      eyebrow: 'Magazyn · Przyjęcie', title: 'Wczytaj z faktury',
+      hint: 'PDF faktury zakupowej — AI odczyta pozycje i ceny NETTO, a system dobierze produkty z kartoteki. Sprawdź dopasowania przed utworzeniem dokumentu.',
+      cta: 'Utwórz projekt przyjęcia',
+      // Listy wyboru produktu w wierszach faktury karmią się `state.mag.formData`.
+      onOpen: async () => { await magForm(); },
+      fields: () => `
+        <label class="field"><span>Plik faktury (PDF) *</span><input type="file" accept="application/pdf,.pdf" data-mag-invoice-file></label>
+        <div data-mag-invoice-status class="hint" style="margin:-2px 0 4px;">Wybierz PDF z warstwą tekstową (nie skan).</div>
+        <div data-mag-invoice-meta></div>
+        <div data-mag-invoice-list></div>`,
+      submit: async (_data, ctx) => {
+        const rows = readInvoiceRows();
+        if (!rows.length) throw new Error('Najpierw wczytaj plik PDF faktury.');
+        const meta = ctx.invoiceMeta || {};
+        const res = await api('/warehouse/operations/from-invoice', {
+          method: 'POST',
+          body: JSON.stringify({
+            supplierId: meta.supplierId || null,
+            supplierName: meta.supplier || '',
+            invoiceNumber: meta.invoiceNumber || '',
+            invoiceDate: meta.invoiceDate || '',
+            lines: rows
+          })
+        });
+        toast(res.message || ('Utworzono ' + res.reference));
+        if (res.supplierCreated) toast('Założono dostawcę: ' + (meta.supplier || ''));
+        afterOpChange();
+        setTimeout(() => openOpEditor(res.id), 60);
+      }
+    },
+    quickLocation: {
+      eyebrow: 'Magazyn · Operacja', title: 'Nowa lokalizacja',
+      hint: 'Dodaj brakującą lokalizację bez wychodzenia z dokumentu. Trafi też do Konfiguracji.', cta: 'Utwórz',
+      fields: () => `
+        <label class="field"><span>Nazwa *</span><input name="name" placeholder="np. Magazyn Żmichowska — regał C"></label>
+        <label class="field"><span>Rodzaj</span><select name="kind">
+          <option value="internal">Magazynowa (trzyma stan)</option>
+          <option value="employee">U pracownika</option>
+        </select></label>`,
+      submit: async (data, ctx) => {
+        if (!data.name) throw new Error('Podaj nazwę lokalizacji.');
+        const res = await api('/warehouse/locations', { method: 'POST', body: JSON.stringify({ name: data.name, kind: data.kind || 'internal' }) });
+        state.mag.formData = state.mag.formData || {};
+        (state.mag.formData.locations = state.mag.formData.locations || [])
+          .push({ id: res.id, code: res.code, name: res.name, kind: res.kind });
+        applyQuickHeaderPick(ctx.field, res.id, res.name);
+        toast('Utworzono lokalizację: ' + res.name);
+      }
+    },
+    quickDestination: {
+      eyebrow: 'Magazyn · Operacja', title: 'Nowe miejsce dostawy',
+      hint: 'Dokąd towar jedzie (szkoła, event, odbiorca). Trafi też do Konfiguracji.', cta: 'Utwórz',
+      fields: () => `
+        <label class="field"><span>Nazwa *</span><input name="name" placeholder="np. LO nr 3 Kraków"></label>
+        <label class="field"><span>Kontakt</span><input name="contact" placeholder="e-mail / telefon"></label>`,
+      submit: async (data, ctx) => {
+        if (!data.name) throw new Error('Podaj nazwę miejsca dostawy.');
+        const res = await api('/warehouse/delivery-destinations', { method: 'POST', body: JSON.stringify({ name: data.name, contact: data.contact || '' }) });
+        state.mag.formData = state.mag.formData || {};
+        (state.mag.formData.deliveryDestinations = state.mag.formData.deliveryDestinations || [])
+          .push({ id: res.id, name: res.name });
+        applyQuickHeaderPick(ctx.field, res.id, res.name);
+        toast('Utworzono miejsce dostawy: ' + res.name);
+      }
+    },
     supplier: {
       eyebrow: 'Magazyn · Konfiguracja', title: (ctx) => ctx.id ? 'Edytuj dostawcę' : 'Nowy dostawca',
       hint: 'Dostawca będzie dostępny przy przyjęciach.', cta: 'Zapisz',
@@ -1797,7 +1863,10 @@
       `<button class="op-subtab ${state.magOpType === type ? 'active' : ''}" data-mag-optab="${type}">${OP_META[type].label}</button>`).join('');
     el.innerHTML = `<div class="anim-fadeup">
       <div class="op-subtabs">${subtabs}</div>
-      <button class="btn btn-primary" data-mag-new-op style="margin-bottom:18px;"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>Nowa operacja</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:18px;">
+        <button class="btn btn-primary" data-mag-new-op><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>Nowa operacja</button>
+        ${state.magOpType === 'receipt' ? '<button class="btn btn-ghost" data-mag-invoice>Wczytaj z faktury</button>' : ''}
+      </div>
       <div data-mag-op-list><div class="loading">Ładowanie…</div></div></div>`;
     const list = $('[data-mag-op-list]');
     try {
@@ -1826,7 +1895,7 @@
   }
 
   // Operation editor: read-only for done/cancelled, editable for draft/ready.
-  const opEdit = { id: null, type: null, lines: [] };
+  const opEdit = { id: null, type: null, lines: [], pending: [] };
 
   async function openOpEditor(id) {
     const wrap = $('#drawer-wrap'); const box = $('#drawer');
@@ -1836,6 +1905,7 @@
       const [op, form] = await Promise.all([api('/warehouse/operations/' + encodeURIComponent(id)), magForm()]);
       if (op.state === 'done' || op.state === 'cancelled') return renderOpReadonly(box, op);
       opEdit.id = op.id; opEdit.type = op.type;
+      opEdit.pending = Array.isArray(op.pendingInvoiceLines) ? op.pendingInvoiceLines.map((l) => ({ ...l })) : [];
       opEdit.lines = (op.lines || []).map((l) => ({ itemCode: l.itemCode, quantity: l.quantity, unitPrice: l.unitPrice, targetItemCode: l.targetItemCode, countedQty: l.countedQty }));
       renderOpEditor(box, op, form);
     } catch (e) { box.innerHTML = `<div class="drawer-body">${emptyBlock('Nie udało się wczytać', e.message || '')}</div>`; }
@@ -1866,9 +1936,11 @@
 
   function renderOpEditor(box, op, form) {
     const t = op.type;
-    const locOpts = (sel) => optList(form.locations, (l) => l.id, (l) => l.name, sel);
+    // W selectach nagłówka doklejamy „＋ Nowa…" — jak „＋ Nowy produkt…" przy konwersji.
+    // Planista nie musi wychodzić do Konfiguracji, żeby dopisać brakującą lokalizację.
+    const locOpts = (sel) => optList(form.locations, (l) => l.id, (l) => l.name, sel) + '<option value="__new__">＋ Nowa lokalizacja…</option>';
     const supOpts = (sel) => '<option value="">— brak —</option>' + optList(form.suppliers, (s) => s.id, (s) => s.name, sel);
-    const dstOpts = (sel) => '<option value="">— brak —</option>' + optList(form.deliveryDestinations, (d) => d.id, (d) => d.name, sel);
+    const dstOpts = (sel) => '<option value="">— brak —</option>' + optList(form.deliveryDestinations, (d) => d.id, (d) => d.name, sel) + '<option value="__new__">＋ Nowe miejsce dostawy…</option>';
     const partyField = t === 'receipt'
       ? `<label class="field"><span>Dostawca</span><select data-op-h="supplierId">${supOpts(op.supplierId)}</select></label>`
       : t === 'delivery'
@@ -1891,6 +1963,7 @@
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><div style="font-size:13px;font-weight:600;color:var(--ink);">Pozycje</div><button class="btn btn-ghost btn-sm" data-op-addline>+ Dodaj</button></div>
         <div data-op-lines></div>
+        <div data-op-pending></div>
       </div>
       <div class="drawer-foot" style="flex-wrap:wrap;gap:8px;">
         <button class="btn btn-primary" style="flex:1;min-width:120px;" data-op-validate>Zatwierdź operację</button>
@@ -1898,6 +1971,99 @@
         <button class="btn btn-danger-ghost" data-op-cancel>Anuluj</button>
       </div>`;
     renderOpLines();
+    renderPendingInvoiceLines();
+    bindQuickHeaderPickers();
+  }
+
+  // Pozycje z faktury, których nie udało się dopasować do kartoteki. Dopóki tu coś
+  // wisi, backend nie pozwoli zatwierdzić dokumentu (validateOperation) — więc dajemy
+  // dwa wyjścia: wskaż produkt (wiersz przechodzi do pozycji) albo odrzuć pozycję.
+  function renderPendingInvoiceLines() {
+    const wrap = $('[data-op-pending]');
+    if (!wrap) return;
+    const pending = opEdit.pending || [];
+    if (!pending.length) { wrap.innerHTML = ''; return; }
+    const items = (state.mag.formData || {}).items || [];
+    const opts = (sel) => '<option value="">— wskaż produkt —</option>' +
+      items.map((i) => `<option value="${esc(i.itemCode)}"${i.itemCode === sel ? ' selected' : ''}>${esc(i.itemCode)} · ${esc(i.name)}</option>`).join('');
+    wrap.innerHTML = `
+      <div style="margin-top:18px;padding:12px;border:1px solid var(--orange);border-radius:11px;background:var(--orange-soft);color:var(--orange-ink);">
+        <div style="font-size:13px;font-weight:600;margin-bottom:4px;">Z faktury, bez produktu (${fmtInt(pending.length)})</div>
+        <p class="sub" style="margin:0 0 10px;">Dokumentu nie da się zatwierdzić, dopóki każda z tych pozycji nie wskaże produktu albo nie zostanie odrzucona.</p>
+        ${pending.map((l, i) => `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+          <span style="flex:1;min-width:150px;font-size:13px;">${esc(l.invoiceName)} <span class="mut">· ${esc(String(l.quantity))} × ${esc(fmtMoney(l.unitPrice))}</span></span>
+          <select data-pending-code="${i}" style="flex:1;min-width:170px;">${opts('')}</select>
+          <button class="btn btn-ghost btn-sm" data-op-resolve="${i}">Dodaj</button>
+          <button class="x-btn" data-op-resolve="drop:${i}" style="width:32px;height:32px;flex-shrink:0;" title="Odrzuć pozycję">×</button>
+        </div>`).join('')}
+      </div>`;
+    $$('[data-pending-code]').forEach((el) => {
+      el.style.border = '1px solid var(--line-2)'; el.style.borderRadius = '9px';
+      el.style.padding = '9px 11px'; el.style.fontSize = '13.5px'; el.style.background = 'var(--surface)'; el.style.color = 'var(--ink)';
+    });
+  }
+
+  // „Dodaj" przenosi pozycję faktury do pozycji dokumentu (z ilością i ceną netto),
+  // „×" ją odrzuca. Jedno i drugie zapisujemy od razu, żeby stan w bazie zgadzał się
+  // z tym, co widać — blokada zatwierdzenia czyta pendingInvoiceLines z dokumentu.
+  async function resolvePendingLine(token) {
+    const drop = String(token).startsWith('drop:');
+    const idx = Number(drop ? String(token).slice(5) : token);
+    const pending = opEdit.pending || [];
+    const line = pending[idx];
+    if (!line) return;
+
+    if (!drop) {
+      const sel = $(`[data-pending-code="${idx}"]`);
+      const code = sel ? sel.value : '';
+      if (!code) { toast('Najpierw wskaż produkt.', true); return; }
+      readOpLinesFromDOM();
+      opEdit.lines.push({ itemCode: code, quantity: line.quantity, unitPrice: line.unitPrice });
+    } else {
+      readOpLinesFromDOM();
+    }
+    opEdit.pending = pending.filter((_, i) => i !== idx);
+
+    try {
+      await api('/warehouse/operations/' + encodeURIComponent(opEdit.id), {
+        method: 'PATCH',
+        body: JSON.stringify(Object.assign(
+          { lines: opEdit.lines, pendingInvoiceLines: opEdit.pending },
+          readOpHeaderFromDOM()
+        ))
+      });
+      renderOpLines();
+      renderPendingInvoiceLines();
+      toast(drop ? 'Odrzucono pozycję z faktury.' : 'Dodano pozycję do dokumentu.');
+    } catch (e) { toast(e.message || 'Nie udało się zapisać.', true); }
+  }
+
+  // „＋ Nowa…" w selectach nagłówka. Po wyborze przywracamy poprzednią wartość i
+  // otwieramy sheet — dzięki temu anulowanie nie zostawia selecta na „__new__".
+  function bindQuickHeaderPickers() {
+    [['fromLocationId', 'quickLocation'], ['toLocationId', 'quickLocation'], ['destinationId', 'quickDestination']]
+      .forEach(([field, sheet]) => {
+        const sel = $(`[data-op-h="${field}"]`);
+        if (!sel) return;
+        let prev = sel.value;
+        sel.addEventListener('change', () => {
+          if (sel.value !== '__new__') { prev = sel.value; return; }
+          sel.value = prev;
+          openSheet(sheet, { field });
+        });
+      });
+  }
+
+  // Wstawia świeżo utworzoną pozycję do selecta nagłówka i od razu ją wybiera,
+  // bez przerysowania edytora — niezapisane pozycje operacji zostają nietknięte.
+  function applyQuickHeaderPick(field, id, label) {
+    const sel = $(`[data-op-h="${field}"]`);
+    if (!sel) return;
+    const opt = document.createElement('option');
+    opt.value = id; opt.textContent = label;
+    const newOpt = Array.from(sel.options).find((o) => o.value === '__new__');
+    sel.insertBefore(opt, newOpt || null);
+    sel.value = id;
   }
 
   function renderOpLines() {
@@ -1922,7 +2088,7 @@
       </div>`;
     }).join('');
     // style line inputs
-    $$('[data-line-field]').forEach((el) => { el.style.border = '1px solid var(--line-2)'; el.style.borderRadius = '9px'; el.style.padding = '9px 11px'; el.style.fontSize = '13.5px'; el.style.background = '#fff'; el.style.outline = 'none'; });
+    $$('[data-line-field]').forEach((el) => { el.style.border = '1px solid var(--line-2)'; el.style.borderRadius = '9px'; el.style.padding = '9px 11px'; el.style.fontSize = '13.5px'; el.style.background = 'var(--surface)'; el.style.color = 'var(--ink)'; el.style.outline = 'none'; });
     // Konwersja: wybór „＋ Nowy produkt…" w celu → szybkie utworzenie produktu.
     $$('[data-line-field="targetItemCode"]', wrap).forEach((sel) => sel.addEventListener('change', () => {
       if (sel.value === '__new__') { sel.value = ''; openQuickProduct(Number(sel.dataset.idx)); }
@@ -1952,7 +2118,7 @@
   async function saveOp(silent) {
     readOpLinesFromDOM();
     const h = readOpHeaderFromDOM();
-    const body = Object.assign({ lines: opEdit.lines }, h);
+    const body = Object.assign({ lines: opEdit.lines, pendingInvoiceLines: opEdit.pending || [] }, h);
     await api('/warehouse/operations/' + encodeURIComponent(opEdit.id), { method: 'PATCH', body: JSON.stringify(body) });
     if (!silent) toast('Zapisano.');
   }
@@ -2136,14 +2302,7 @@
     body.innerHTML = '<div class="loading">Ładowanie…</div>';
     try {
       if (id === 'stock') {
-        const rows = await api('/warehouse/stock');
-        body.innerHTML = rows.length ? tableHTML(
-          [{ t: 'Kod' }, { t: 'Nazwa' }, { t: 'Lokalizacja' }, { t: 'Ilość', num: true }, { t: 'Dostępne', num: true }],
-          rows.map((r) => ({ cells: [
-            { v: r.itemCode, cls: 'mono-cell' }, { v: r.name }, { v: r.locationName, cls: 'mut' },
-            { v: fmtInt(r.quantity), cls: 'num' }, { html: `<span style="color:#1B7A4F;font-weight:600;">${fmtInt(r.available)}</span>`, cls: 'num' }
-          ] }))
-        ) : emptyBlock('Brak stanu', '');
+        await renderStockReport(body);
       } else if (id === 'valuation') {
         const val = await api('/warehouse/valuation'); state.mag.valuation = val;
         const products = (val.categories || []).flatMap((c) => c.products.map((p) => ({ ...p, category: c.category })));
@@ -2205,6 +2364,98 @@
       }
     } catch (e) { body.innerHTML = emptyBlock('Nie udało się wczytać', e.message || ''); }
   }
+
+  // ---- Raport „Stan": bieżący albo odtworzony na wskazany dzień.
+  // Pusta data = stan bieżący z `quants`. Data = przewinięcie rejestru ruchów
+  // (GET /warehouse/stock-at), które dokłada wycenę FIFO z tamtego dnia.
+  function stockAtState() {
+    if (!state.mag.stockAt) state.mag.stockAt = { date: '', rep: null };
+    return state.mag.stockAt;
+  }
+
+  async function renderStockReport(body) {
+    const st = stockAtState();
+    const toolbar = `<div class="period-toolbar" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:4px 0 14px;">
+      <label class="field" style="margin:0;"><span>Stan na dzień</span><input type="date" data-stockat-date value="${esc(st.date)}" max="${esc(todayISO())}"></label>
+      <button class="btn btn-ghost btn-sm" data-stockat-apply>Odtwórz</button>
+      ${st.date ? '<button class="btn btn-ghost btn-sm" data-stockat-clear>Wróć do dziś</button>' : ''}
+      <button class="btn btn-ghost btn-sm" data-stockat-csv style="margin-left:auto;">Eksportuj CSV</button>
+    </div>`;
+
+    if (!st.date) {
+      const rows = await api('/warehouse/stock');
+      st.rep = null;
+      state.mag.stockRows = rows;
+      body.innerHTML = toolbar + (rows.length ? tableHTML(
+        [{ t: 'Kod' }, { t: 'Nazwa' }, { t: 'Lokalizacja' }, { t: 'Ilość', num: true }, { t: 'Dostępne', num: true }],
+        rows.map((r) => ({ cells: [
+          { v: r.itemCode, cls: 'mono-cell' }, { v: r.name }, { v: r.locationName, cls: 'mut' },
+          { v: fmtInt(r.quantity), cls: 'num' }, { html: `<span style="color:#1B7A4F;font-weight:600;">${fmtInt(r.available)}</span>`, cls: 'num' }
+        ] }))
+      ) : emptyBlock('Brak stanu', ''));
+      return;
+    }
+
+    const rep = await api('/warehouse/stock-at?date=' + encodeURIComponent(st.date));
+    st.rep = rep;
+    const rows = rep.rows || [];
+    const banner = `<div class="valuation-banner"><span class="lbl">Wartość zapasu na ${esc(fmtDayISO(st.date))}</span><span class="val">${esc(fmtMoney(rep.totalValue))}</span></div>`;
+    // Uczciwe zastrzeżenie: partie cenowe nie mają własnej historii, więc dla części
+    // pozycji wycena jest odtworzona przybliżeniem. Ilości są dokładne zawsze.
+    const warn = rep.inexactCount
+      ? `<p class="sub" style="margin:0 0 12px;">⚠︎ ${fmtInt(rep.inexactCount)} ${plural(rep.inexactCount, 'pozycja ma', 'pozycje mają', 'pozycji ma')} wycenę przybliżoną (brak ceny w dokumencie źródłowym) — w tabeli oznaczone „~". Ilości są dokładne.</p>`
+      : '';
+    body.innerHTML = toolbar + banner + warn + (rows.length ? tableHTML(
+      [{ t: 'Kod' }, { t: 'Nazwa' }, { t: 'Lokalizacja' }, { t: 'Ilość', num: true }, { t: 'Cena jedn.', num: true }, { t: 'Wartość', num: true }],
+      rows.map((r) => ({ cells: [
+        { v: r.itemCode, cls: 'mono-cell' }, { v: r.name }, { v: r.locationName, cls: 'mut' },
+        { v: fmtQty(r.quantity) + (r.unit && r.unit !== 'szt.' ? ' ' + r.unit : ''), cls: 'num' },
+        { v: (r.valueExact ? '' : '~') + fmtMoney(r.unitValue), cls: 'num mut' },
+        { v: (r.valueExact ? '' : '~') + fmtMoney(r.value), cls: 'num' }
+      ] }))
+    ) : emptyBlock('Brak stanu na ten dzień', 'Tego dnia magazyn był pusty albo nie było jeszcze żadnych ruchów.'));
+  }
+
+  function applyStockAt() {
+    const el = $('[data-stockat-date]');
+    stockAtState().date = el ? el.value : '';
+    renderReport('stock');
+  }
+  function clearStockAt() { stockAtState().date = ''; renderReport('stock'); }
+
+  function exportStockAtCSV() {
+    const st = stockAtState();
+    if (!st.date) {
+      const rows = state.mag.stockRows || [];
+      if (!rows.length) { toast('Brak stanu do eksportu.', true); return; }
+      downloadCSV(
+        [['Kod', 'Nazwa', 'Kategoria', 'Lokalizacja', 'Ilość', 'Dostępne']].concat(
+          rows.map((r) => [r.itemCode, r.name, r.category, r.locationName, r.quantity, r.available])),
+        'stan-biezacy-' + todayISO() + '.csv');
+      return;
+    }
+    const rows = (st.rep || {}).rows || [];
+    if (!rows.length) { toast('Brak stanu do eksportu.', true); return; }
+    downloadCSV(
+      [['Kod', 'Nazwa', 'Kategoria', 'Lokalizacja', 'Ilość', 'Jednostka', 'Cena jedn.', 'Wartość', 'Wycena']].concat(
+        rows.map((r) => [r.itemCode, r.name, r.category, r.locationName, r.quantity, r.unit, r.unitValue, r.value, r.valueExact ? 'dokładna' : 'przybliżona'])),
+      'stan-na-' + st.date + '.csv');
+  }
+
+  // Wspólny zapis CSV (BOM dla Excela, cudzysłowy zgodnie z RFC 4180).
+  function downloadCSV(matrix, filename) {
+    const csv = matrix.map((r) => r.map((c) => `"${String(c == null ? '' : c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob(['\ufeff' + csv], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(a.href);
+  }
+
+  const todayISO = () => new Date().toISOString().slice(0, 10);
+  const fmtDayISO = (iso) => { const p = String(iso).split('-'); return `${p[2]}.${p[1]}.${p[0]}`; };
+  const fmtQty = (n) => (Number(n) % 1 === 0 ? fmtInt(n) : String(Math.round(Number(n) * 1000) / 1000).replace('.', ','));
 
   // ---- Raport „Ruchy w okresie" (kategoria + zakres dat + ceny wg partii + eksport)
   function periodState() {
@@ -2900,7 +3151,7 @@
 
   // -------------------------------------------------------------- global events
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-go],[data-view],[data-sheet],[data-detail],[data-request],[data-transfer],[data-report],[data-return],[data-req-act],[data-req-cancel],[data-cmt-send],[data-notif-resolve],[data-sec-toggle],[data-rej-tab],[data-rej-csv],[data-user-new],[data-user-del],[data-user-offboard],[data-offb-finish],[data-close-drawer],[data-close-sheet],[data-soon],#sheetSubmit,[data-stop],[data-mag-tab],[data-mag-optab],[data-mag-report],[data-mag-op],[data-mag-csv],[data-mag-new-op],[data-mag-config-add],[data-op-addline],[data-op-delline],[data-op-save],[data-op-validate],[data-op-cancel],[data-op-reverse],[data-sup-edit],[data-sup-del],[data-loc-edit],[data-loc-del],[data-lic-new],[data-lic-detail],[data-lic-edit],[data-lic-del],[data-acc-tab],[data-acc-new],[data-acc-edit],[data-acc-del],[data-acc-bulk-apply],[data-idn-new],[data-idn-detail],[data-idn-edit],[data-idn-del],[data-theme-opt],[data-pref-toggle],[data-tw-new],[data-tw-edit],[data-tw-del],[data-twp-new],[data-twp-edit],[data-twp-del],[data-tw-return-mode],[data-ai-invoice],[data-ai-new],[data-ai-edit],[data-ai-transfer],[data-ai-discard],[data-ai-import],[data-ai-export],[data-rr-new],[data-rr-edit],[data-rr-del],[data-rr-replenish],[data-prod-new],[data-prod-edit],[data-prod-import],[data-batch-add],[data-batch-del],[data-prod-save],[data-health-recompute],[data-op-pdf],[data-dst-edit],[data-dst-del],[data-period-apply],[data-period-csv]');
+    const t = e.target.closest('[data-go],[data-view],[data-sheet],[data-detail],[data-request],[data-transfer],[data-report],[data-return],[data-req-act],[data-req-cancel],[data-cmt-send],[data-notif-resolve],[data-sec-toggle],[data-rej-tab],[data-rej-csv],[data-user-new],[data-user-del],[data-user-offboard],[data-offb-finish],[data-close-drawer],[data-close-sheet],[data-soon],#sheetSubmit,[data-stop],[data-mag-tab],[data-mag-optab],[data-mag-report],[data-mag-op],[data-mag-csv],[data-mag-new-op],[data-mag-config-add],[data-op-addline],[data-op-delline],[data-op-save],[data-op-validate],[data-op-cancel],[data-op-reverse],[data-sup-edit],[data-sup-del],[data-loc-edit],[data-loc-del],[data-lic-new],[data-lic-detail],[data-lic-edit],[data-lic-del],[data-acc-tab],[data-acc-new],[data-acc-edit],[data-acc-del],[data-acc-bulk-apply],[data-idn-new],[data-idn-detail],[data-idn-edit],[data-idn-del],[data-theme-opt],[data-pref-toggle],[data-tw-new],[data-tw-edit],[data-tw-del],[data-twp-new],[data-twp-edit],[data-twp-del],[data-tw-return-mode],[data-ai-invoice],[data-ai-new],[data-ai-edit],[data-ai-transfer],[data-ai-discard],[data-ai-import],[data-ai-export],[data-rr-new],[data-rr-edit],[data-rr-del],[data-rr-replenish],[data-prod-new],[data-prod-edit],[data-prod-import],[data-batch-add],[data-batch-del],[data-prod-save],[data-health-recompute],[data-op-pdf],[data-dst-edit],[data-dst-del],[data-period-apply],[data-period-csv],[data-stockat-apply],[data-stockat-csv],[data-stockat-clear],[data-mag-invoice],[data-op-resolve]');
     if (!t) return;
 
     if (t.hasAttribute('data-rr-new')) { openSheet('reorderRule', {}); return; }
@@ -2944,11 +3195,16 @@
     if (t.dataset.magTab) { setMagTab(t.dataset.magTab); return; }
     if (t.dataset.magOptab) { state.magOpType = t.dataset.magOptab; renderOperacje(); return; }
     if (t.dataset.magReport) { state.magReport = t.dataset.magReport; $$('[data-mag-report]').forEach((b) => b.classList.toggle('active', b === t)); renderReport(t.dataset.magReport); return; }
+    if (t.hasAttribute('data-stockat-apply')) { applyStockAt(); return; }
+    if (t.hasAttribute('data-stockat-clear')) { clearStockAt(); return; }
+    if (t.hasAttribute('data-stockat-csv')) { exportStockAtCSV(); return; }
     if (t.hasAttribute('data-period-apply')) { applyPeriodFilters(); return; }
     if (t.hasAttribute('data-period-csv')) { exportPeriodCSV(); return; }
     if (t.hasAttribute('data-mag-op')) { openOpEditor(t.getAttribute('data-mag-op')); return; }
     if (t.hasAttribute('data-mag-csv')) { exportProductsCSV(); return; }
     if (t.hasAttribute('data-mag-new-op')) { openNewOp(state.magOpType); return; }
+    if (t.hasAttribute('data-mag-invoice')) { openSheet('magInvoice', {}); return; }
+    if (t.hasAttribute('data-op-resolve')) { resolvePendingLine(t.getAttribute('data-op-resolve')); return; }
     if (t.hasAttribute('data-mag-config-add')) { const k = t.getAttribute('data-mag-config-add'); openSheet(k === 'dostawca' ? 'supplier' : k === 'destynacja' ? 'destination' : 'location', {}); return; }
     if (t.hasAttribute('data-dst-edit')) { const d = (state.mag.destinations || []).find((x) => x.id === t.getAttribute('data-dst-edit')); openSheet('destination', d || {}); return; }
     if (t.hasAttribute('data-dst-del')) { delDestination(t.getAttribute('data-dst-del')); return; }
@@ -3013,6 +3269,8 @@
   document.addEventListener('change', (e) => {
     const inp = e.target && e.target.closest ? e.target.closest('[data-invoice-file]') : null;
     if (inp) onInvoiceFileChosen(inp);
+    const magInp = e.target && e.target.closest ? e.target.closest('[data-mag-invoice-file]') : null;
+    if (magInp) onMagInvoiceFileChosen(magInp);
 
     // Filtry tabeli Dostępów → aktualizuj stan i przeładuj.
     const filt = e.target && e.target.closest ? e.target.closest('[data-acc-filter]') : null;
@@ -3035,6 +3293,99 @@
         .catch((err) => { offbAcc.checked = false; offbAcc.disabled = false; toast(err.message || 'Nie udało się.', true); });
     }
   });
+
+  // ---- Import faktury do Magazynu (dokument przyjęcia) ----
+  function onMagInvoiceFileChosen(input) {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    const statusEl = $('#sheetForm [data-mag-invoice-status]');
+    if (file.type !== 'application/pdf' && !/\.pdf$/i.test(file.name)) {
+      if (statusEl) statusEl.textContent = 'To nie jest plik PDF.';
+      return;
+    }
+    const listEl = $('#sheetForm [data-mag-invoice-list]');
+    if (listEl) listEl.innerHTML = '';
+    if (statusEl) statusEl.textContent = 'Czytam fakturę… to potrwa kilka sekund.';
+    const reader = new FileReader();
+    reader.onerror = () => { if (statusEl) statusEl.textContent = 'Nie udało się odczytać pliku.'; };
+    reader.onload = async () => {
+      try {
+        const res = await api('/warehouse/extract-invoice', {
+          method: 'POST',
+          body: JSON.stringify({ fileBase64: reader.result, fileName: file.name })
+        });
+        if (currentSheet && currentSheet.type === 'magInvoice') {
+          currentSheet.ctx.invoiceMeta = {
+            supplier: res.supplier, supplierId: res.supplierId,
+            invoiceNumber: res.invoiceNumber, invoiceDate: res.invoiceDate
+          };
+        }
+        renderMagInvoiceReview(res);
+      } catch (e) {
+        const el = $('#sheetForm [data-mag-invoice-status]');
+        if (el) el.textContent = e.message || 'Nie udało się odczytać faktury.';
+      }
+    };
+    reader.readAsDataURL(file);
+  }
+
+  // Lista produktów magazynowych do wyboru w wierszu faktury.
+  function invoiceProductOptions(sel) {
+    const items = (state.mag.formData || {}).items || [];
+    return '<option value="">— nie dopasowano —</option>' +
+      items.map((i) => `<option value="${esc(i.itemCode)}"${i.itemCode === sel ? ' selected' : ''}>${esc(i.itemCode)} · ${esc(i.name)}</option>`).join('');
+  }
+
+  function renderMagInvoiceReview(res) {
+    const statusEl = $('#sheetForm [data-mag-invoice-status]');
+    const metaEl = $('#sheetForm [data-mag-invoice-meta]');
+    const listEl = $('#sheetForm [data-mag-invoice-list]');
+    const lines = res.lines || [];
+    if (statusEl) {
+      statusEl.textContent = `Odczytano ${lines.length} ${plural(lines.length, 'pozycję', 'pozycje', 'pozycji')}, dopasowano ${res.matchedCount} do kartoteki.`;
+    }
+    if (metaEl) {
+      const bits = [
+        res.supplier ? `Dostawca: ${res.supplier}${res.supplierId ? '' : ' (nowy — zostanie założony)'}` : '',
+        res.invoiceNumber ? `Faktura: ${res.invoiceNumber}` : ''
+      ].filter(Boolean);
+      metaEl.innerHTML = bits.length ? `<p class="sub" style="margin:2px 0 10px;">${esc(bits.join(' · '))}</p>` : '';
+    }
+    if (!listEl) return;
+    listEl.innerHTML = lines.map((l, i) => {
+      const s = l.suggestion;
+      const badge = !s ? '<span class="chip chip-orange">do wskazania</span>'
+        : s.source === 'alias' ? '<span class="chip chip-blue">zapamiętane</span>'
+        : s.source === 'exact' ? '<span class="chip chip-new">pewne</span>'
+        : `<span class="chip chip-orange">podobne ${Math.round(s.score * 100)}%</span>`;
+      return `<div data-inv-row="${i}" style="border:1px solid var(--line-2);border-radius:11px;padding:10px;margin-bottom:8px;">
+        <div style="display:flex;gap:8px;align-items:center;justify-content:space-between;margin-bottom:6px;">
+          <strong style="font-size:13px;">${esc(l.invoiceName)}</strong>${badge}
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+          <select data-inv-code style="flex:1;min-width:180px;">${invoiceProductOptions(s ? s.itemCode : '')}</select>
+          <input data-inv-qty type="number" min="0" step="0.001" value="${esc(String(l.quantity))}" style="width:90px;" title="Ilość">
+          <span class="mut" style="font-size:12px;">${esc(l.unit || 'szt.')}</span>
+          <input data-inv-price type="number" min="0" step="0.01" value="${esc(String(l.unitPriceNet || ''))}" placeholder="cena" style="width:90px;" title="Cena jednostkowa netto">
+          <span class="mut" style="font-size:12px;">zł netto / ${esc(l.unit || 'szt.')}</span>
+        </div>
+      </div>`;
+    }).join('');
+    $$('#sheetForm [data-inv-code],#sheetForm [data-inv-qty],#sheetForm [data-inv-price]').forEach((el) => {
+      el.style.border = '1px solid var(--line-2)'; el.style.borderRadius = '9px';
+      el.style.padding = '8px 10px'; el.style.fontSize = '13px'; el.style.background = 'var(--surface)'; el.style.color = 'var(--ink)';
+    });
+  }
+
+  // Zbiera wiersze faktury z DOM-u (po ewentualnych poprawkach człowieka).
+  function readInvoiceRows() {
+    return $$('#sheetForm [data-inv-row]').map((row) => ({
+      invoiceName: (row.querySelector('strong') || {}).textContent || '',
+      itemCode: (row.querySelector('[data-inv-code]') || {}).value || '',
+      quantity: Number((row.querySelector('[data-inv-qty]') || {}).value || 0),
+      unitPrice: Number((row.querySelector('[data-inv-price]') || {}).value || 0)
+    }));
+  }
 
   function onInvoiceFileChosen(input) {
     const file = input.files && input.files[0];
