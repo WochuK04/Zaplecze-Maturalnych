@@ -19,6 +19,9 @@ export const collections = {
   counters: 'counters',
   suppliers: 'suppliers',
   deliveryDestinations: 'deliveryDestinations',
+  // Słownik „ten tekst z faktury = ten produkt". Uczy się z ręcznych poprawek przy
+  // imporcie faktur, żeby kolejna faktura od tego samego dostawcy trafiała od razu.
+  invoiceAliases: 'invoiceAliases',
 
   // Wyjazdy (eventy edukacyjne, np. Turbo Weekend) w miastach + lista pakowania
   // (ile czego zabrać wg liczby uczestników) + stan spakowania/powrotu.
@@ -93,6 +96,12 @@ export async function ensureIndexes(db) {
     { key: { category: 1, name: 1 }, name: 'idx_item_category_name' },
     { key: { operationalStatus: 1, currentLocation: 1 }, name: 'idx_item_status_location' },
     { key: { isActive: 1, operationalStatus: 1 }, name: 'idx_item_active_status' }
+  ]);
+
+  await db.collection(collections.invoiceAliases).createIndexes([
+    // Jeden tekst faktury wskazuje dokładnie jeden produkt — ostatnia decyzja wygrywa.
+    { key: { normalized: 1 }, unique: true, name: 'uniq_invoice_alias' },
+    { key: { itemCode: 1 }, name: 'idx_invoice_alias_item' }
   ]);
 
   await db.collection(collections.loans).createIndexes([

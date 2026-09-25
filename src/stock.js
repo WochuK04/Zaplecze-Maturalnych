@@ -416,6 +416,19 @@ export async function validateOperation(db, operationId, actorEmail) {
   const lines = Array.isArray(op.lines) ? op.lines : [];
   if (!lines.length) throw new Error('Operacja nie ma pozycji');
 
+  // Dokument z importu faktury: dopóki którakolwiek pozycja nie wskazuje produktu,
+  // zatwierdzić się nie da. Inaczej towar z faktury zniknąłby po cichu — wszedłby
+  // dokument niepełny, a nikt by tego nie zauważył, bo reszta pozycji by przeszła.
+  const pendingInvoice = Array.isArray(op.pendingInvoiceLines) ? op.pendingInvoiceLines : [];
+  if (pendingInvoice.length) {
+    const names = pendingInvoice.map(l => l.invoiceName).filter(Boolean).slice(0, 3).join(', ');
+    throw new Error(
+      `Z faktury nie dopasowano ${pendingInvoice.length} ${pendingInvoice.length === 1 ? 'pozycji' : 'pozycji'}` +
+      (names ? ` (${names}${pendingInvoice.length > 3 ? '…' : ''})` : '') +
+      '. Wskaż produkt albo usuń te pozycje z dokumentu.'
+    );
+  }
+
   const now = new Date();
   const affected = new Set();
 
@@ -852,9 +865,47 @@ export async function reverseOperation(db, operationId, actorEmail) {
   if (op.state !== 'done') throw new Error('Cofnąć można tylko wykonaną operację');
 
   const opId = String(op._id);
-  const moves = await db.collection(collections.stockMoves).find({ operationId: opId }).toArray();
+  const stockMoves = db.collection(collections.stockMoves);
+
+  // Cofnięcie = STORNO, nie kasowanie. Rejestr ruchów jest append-only, bo inaczej
+  // „stan na dzień" (GET /warehouse/stock-at) zmieniałby się wstecz: cofnięcie starej
+  // operacji unieważniałoby raporty wydane wcześniej. Zamiast usuwać ruchy, dopisujemy
+  // przeciwstawne z datą cofnięcia — stan bieżący wychodzi ten sam, a historia zostaje.
+  //
+  // Bierzemy tylko ruchy jeszcze nie wystornowane i same nie będące stornem. Po cofnięciu
+  // dokument wraca do wersji roboczej i można go zatwierdzić ponownie, więc przy drugim
+  // cofnięciu pod tym samym operationId leżą już trzy pokolenia ruchów.
+  const moves = await stockMoves
+    .find({ operationId: opId, reversalOf: null, reversedAt: { $exists: false } })
+    .toArray();
   const affected = [...new Set(moves.map(m => m.itemCode))];
-  await db.collection(collections.stockMoves).deleteMany({ operationId: opId });
+
+  const reversedAt = new Date();
+  if (moves.length) {
+    await stockMoves.insertMany(moves.map(m => ({
+      itemCode: m.itemCode,
+      // Przeciwstawny kierunek: to, co weszło, wychodzi — i odwrotnie.
+      fromLocationId: m.toLocationId || null,
+      toLocationId: m.fromLocationId || null,
+      quantity: m.quantity,
+      lot: m.lot ?? null,
+      kind: m.kind || 'internal',
+      state: 'done',
+      operationId: opId,
+      // Znaczniki storna: `reversalOf` wskazuje odwracany ruch, `isReversal` pozwala
+      // raportom odróżnić storno od zwykłego ruchu bez sięgania po oryginał.
+      reversalOf: String(m._id),
+      isReversal: true,
+      actorEmail: actorEmail || null,
+      note: `Storno ${op.reference}`,
+      doneAt: reversedAt,
+      createdAt: reversedAt
+    })));
+    await stockMoves.updateMany(
+      { _id: { $in: moves.map(m => m._id) } },
+      { $set: { reversedAt } }
+    );
+  }
   for (const code of affected) { await recomputeQuants(db, code); await refreshItemCache(db, code); }
 
   // Przyjęcie: zdejmij partie cenowe dopisane przez tę operację (po referencji).
