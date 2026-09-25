@@ -68,7 +68,7 @@
       <div class="launcher-body">
         <div class="launcher-eyebrow">Zaplecze · Maturalni</div>
         <h1>Cześć, <span data-firstname>zespole</span>.<br>Od czego zaczynamy?</h1>
-        <p>Cztery moduły, jedno zaplecze. Wybierz, gdzie chcesz teraz pracować.</p>
+        <p>Trzy moduły, jedno zaplecze. Wybierz, gdzie chcesz teraz pracować.</p>
         <div class="launcher-grid">
           <!-- Sprzęt -->
           <button class="mod-card" data-go="sprzet">
@@ -109,18 +109,7 @@
               <div><div class="num" style="color:var(--heading);" data-stat="licActive">—</div><div class="lbl">aktywnych</div></div>
             </div>
           </button>
-          <!-- Onboarding -->
-          <button class="mod-card" data-go="onboarding">
-            <div class="top">
-              <span class="mod-icon" style="background:#FBEDE0;"><svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#E57200" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/></svg></span>
-              <span class="mod-arrow"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
-            </div>
-            <div class="mod-title">Onboarding</div>
-            <div class="mod-desc">Zasady, narzędzia, instrukcje i dostępy.</div>
-            <div class="mod-stats">
-              <div><div class="num" style="color:#E57200;" data-stat="onbPct">—</div><div class="lbl">ukończone</div></div>
-              <div><div class="num" style="color:var(--heading);" data-stat="onbSteps">—</div><div class="lbl">kroków</div></div>
-            </div>
+        </div>
           </button>
         </div>
       </div>
@@ -364,35 +353,6 @@
         <div data-acc-panel="tozsamosci" hidden>
           <div class="stack" data-idn-list><div class="loading">Ładowanie…</div></div>
         </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- ================= ONBOARDING ================= -->
-  <section id="screen-onboarding" class="hidden">
-    <div class="mag">
-      <div class="mag-header">
-        <div class="mag-header-in">
-          <div class="mag-topbar">
-            <button class="mag-brand" data-go="launcher"><img src="/assets/M_sygnet_white.svg" style="width:30px;height:30px;" onerror="this.src='/assets/M_sygnet.svg'"><span class="t"><span class="a">Zaplecze</span><span class="b">Onboarding</span></span></button>
-            <button class="mobile-icon-btn" data-go="settings"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/></svg></button>
-          </div>
-        </div>
-        <div class="mag-hero" style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;">
-          <div><h1>Onboarding</h1><p data-onb-subtitle>Ładowanie…</p></div>
-          <button class="btn btn-primary hidden" data-onb-new data-admin-only><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></svg>Dodaj krok</button>
-        </div>
-      </div>
-      <div class="mag-body" style="max-width:820px;">
-        <div class="op-subtabs hidden" data-onb-tabs data-admin-only style="margin-bottom:18px;">
-          <button class="op-subtab active" data-onb-tab="moje">Moje kroki</button>
-          <button class="op-subtab" data-onb-tab="osoby">Osoby w onboardingu</button>
-        </div>
-        <div data-onb-panel="moje">
-          <div data-onb-progress></div>
-          <div data-onb-list><div class="loading">Ładowanie…</div></div>
-        </div>
-        <div data-onb-panel="osoby" hidden><div class="loading">Ładowanie…</div></div>
       </div>
     </div>
   </section>
