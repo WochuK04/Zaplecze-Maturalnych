@@ -19,6 +19,9 @@ export const collections = {
   counters: 'counters',
   suppliers: 'suppliers',
   deliveryDestinations: 'deliveryDestinations',
+  // Słownik „ten tekst z faktury = ten produkt". Uczy się z ręcznych poprawek przy
+  // imporcie faktur, żeby kolejna faktura od tego samego dostawcy trafiała od razu.
+  invoiceAliases: 'invoiceAliases',
 
   // Wyjazdy (eventy edukacyjne, np. Turbo Weekend) w miastach + lista pakowania
   // (ile czego zabrać wg liczby uczestników) + stan spakowania/powrotu.
@@ -40,12 +43,7 @@ export const collections = {
   // Dostępy: tabela łącząca użytkownik (email) × licencja. Zastępuje pole „Używają".
   accesses: 'accesses',
   // Konfiguracja modułu (m.in. kursy walut → PLN). Jeden dokument na klucz.
-  settings: 'settings',
-
-  // Onboarding: globalna lista kroków (edytowana przez admina) + postęp
-  // per użytkownik (jeden dokument na parę user+krok).
-  onboardingSteps: 'onboardingSteps',
-  onboardingProgress: 'onboardingProgress'
+  settings: 'settings'
 };
 
 export const itemShape = {
@@ -93,6 +91,12 @@ export async function ensureIndexes(db) {
     { key: { category: 1, name: 1 }, name: 'idx_item_category_name' },
     { key: { operationalStatus: 1, currentLocation: 1 }, name: 'idx_item_status_location' },
     { key: { isActive: 1, operationalStatus: 1 }, name: 'idx_item_active_status' }
+  ]);
+
+  await db.collection(collections.invoiceAliases).createIndexes([
+    // Jeden tekst faktury wskazuje dokładnie jeden produkt — ostatnia decyzja wygrywa.
+    { key: { normalized: 1 }, unique: true, name: 'uniq_invoice_alias' },
+    { key: { itemCode: 1 }, name: 'idx_invoice_alias_item' }
   ]);
 
   await db.collection(collections.loans).createIndexes([
@@ -233,13 +237,5 @@ export async function ensureIndexes(db) {
     { key: { status: 1 }, name: 'idx_access_status' },
     { key: { licenseId: 1 }, name: 'idx_access_license' },
     { key: { externalId: 1 }, unique: true, sparse: true, name: 'uniq_access_external' }
-  ]);
-
-  // === Onboarding ===
-  await db.collection(collections.onboardingSteps).createIndexes([
-    { key: { isActive: 1, sortOrder: 1 }, name: 'idx_onb_steps_active_sort' }
-  ]);
-  await db.collection(collections.onboardingProgress).createIndexes([
-    { key: { userEmail: 1, stepId: 1 }, unique: true, name: 'uniq_onb_progress_user_step' }
   ]);
 }

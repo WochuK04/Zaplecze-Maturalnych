@@ -49,6 +49,49 @@ const ITEM_JSON_SCHEMA = {
   required: ['items']
 };
 
+// Schemat magazynowy. `unitPriceNet` celowo nazwany wprost — w wariancie sprzętowym
+// pole `unitPrice` dopuszczało „netto lub brutto", co przy partiach FIFO byłoby błędem.
+const WAREHOUSE_JSON_SCHEMA = {
+  type: 'object',
+  properties: {
+    supplier: { type: 'string', description: 'Nazwa sprzedawcy / dostawcy z faktury' },
+    invoiceNumber: { type: 'string', description: 'Numer faktury dokładnie tak, jak zapisany na dokumencie' },
+    invoiceDate: { type: 'string', description: 'Data wystawienia w formacie RRRR-MM-DD, jeśli jest' },
+    items: {
+      type: 'array',
+      description: 'Pozycje towarowe faktury, po jednej na wiersz',
+      items: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Nazwa towaru przepisana z faktury' },
+          quantity: { type: 'number', description: 'Ilość; może być ułamkowa przy kilogramach' },
+          unit: { type: 'string', description: 'Jednostka miary z faktury: szt., kg, opak., itp.' },
+          unitPriceNet: { type: 'number', description: 'Cena jednostkowa NETTO. Jeśli na fakturze jest tylko brutto, przelicz na netto po stawce VAT z tego wiersza.' },
+          currency: { type: 'string', description: 'Waluta, np. PLN' }
+        },
+        required: ['name', 'quantity']
+      }
+    }
+  },
+  required: ['items']
+};
+
+const WAREHOUSE_SYSTEM_PROMPT = [
+  'Jesteś asystentem magazynu. Dostajesz surowy tekst faktury ZAKUPOWEJ (po polsku).',
+  'Wypisz pozycje towarowe w ustrukturyzowanym JSON, pod dokument przyjęcia na magazyn.',
+  'Zasady:',
+  '- Jedna pozycja towarowa faktury = jeden element listy items.',
+  '- Pomiń wiersze niebędące towarem: transport, wysyłka, rabaty, zaliczki, sumy, VAT, opłaty.',
+  '- Nazwę PRZEPISZ z faktury, nie skracaj i nie upiększaj — służy do dopasowania do kartoteki.',
+  '- unitPriceNet to cena jednostkowa NETTO. To najważniejsze pole: wchodzi do wyceny magazynu.',
+  '  Jeśli faktura podaje tylko ceny brutto, przelicz na netto po stawce VAT z danego wiersza.',
+  '  Jeśli wiersz podaje wartość netto pozycji zamiast ceny jednostkowej, podziel przez ilość.',
+  '- quantity może być ułamkowa (np. 9.5 przy kilogramach) — nie zaokrąglaj.',
+  '- unit przepisz z faktury (szt., kg, opak., kpl.).',
+  '- Niczego nie zmyślaj. Brak danych to pusty string lub 0.',
+  '- Zwróć wyłącznie dane zgodne ze schematem, bez komentarzy.'
+].join('\n');
+
 const SYSTEM_PROMPT = [
   'Jesteś asystentem ewidencji sprzętu. Dostajesz surowy tekst wyciągnięty z faktury zakupowej (po polsku).',
   'Twoim zadaniem jest wypisać pozycje sprzętu z faktury w ustrukturyzowanym JSON.',
@@ -133,6 +176,20 @@ export async function extractPdfText(fileBase64) {
  * Wysyła tekst faktury do Perplexity i zwraca sparsowany obiekt zgodny ze schematem.
  */
 export async function extractItemsFromText(text) {
+  return callPerplexity(text, SYSTEM_PROMPT, ITEM_JSON_SCHEMA, normalizeResult);
+}
+
+/**
+ * Wariant magazynowy: pozycje towarowe z faktury zakupowej pod dokument PRZYJĘCIA.
+ * Różnice wobec sprzętu: bez marki/modelu/numeru seryjnego i bez zgadywania kategorii
+ * (kategorię niesie dopasowany produkt), za to z jednostką i TWARDO ceną NETTO —
+ * z niej powstaje partia cenowa FIFO, a VAT odliczamy, więc kosztem towaru jest netto.
+ */
+export async function extractWarehouseItemsFromText(text) {
+  return callPerplexity(text, WAREHOUSE_SYSTEM_PROMPT, WAREHOUSE_JSON_SCHEMA, normalizeWarehouseResult);
+}
+
+async function callPerplexity(text, systemPrompt, schema, normalize) {
   const apiKey = process.env.PERPLEXITY_API_KEY;
   if (!apiKey) {
     const err = new Error('Brak PERPLEXITY_API_KEY – ustaw klucz w zmiennych środowiskowych.');
@@ -143,13 +200,13 @@ export async function extractItemsFromText(text) {
   const payload = {
     model: PERPLEXITY_MODEL,
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
       { role: 'user', content: `Tekst faktury:\n\n${text}` }
     ],
     // Wymuszony JSON zgodny ze schematem (structured output).
     response_format: {
       type: 'json_schema',
-      json_schema: { schema: ITEM_JSON_SCHEMA }
+      json_schema: { schema }
     },
     // Faktura nie wymaga wyszukiwania w sieci – oszczędza czas i koszt.
     web_search_options: { search_context_size: 'low' },
@@ -201,12 +258,12 @@ export async function extractItemsFromText(text) {
     throw err;
   }
 
-  return parseModelJson(content);
+  return parseModelJson(content, normalize);
 }
 
 // Model powinien zwrócić czysty JSON, ale bywa, że opakuje go w ```json ... ```
 // albo doda tekst wokół. Wyłuskujemy pierwszy obiekt {...} i parsujemy defensywnie.
-function parseModelJson(content) {
+function parseModelJson(content, normalize) {
   let raw = String(content).trim();
 
   const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -227,7 +284,7 @@ function parseModelJson(content) {
     throw err;
   }
 
-  return normalizeResult(obj);
+  return normalize(obj);
 }
 
 // Sprowadza wynik do bezpiecznego, przewidywalnego kształtu dla frontendu.
@@ -245,6 +302,32 @@ function normalizeResult(obj) {
       currency: str(it?.currency)
     }))
     .filter((it) => it.name && it.category);
+
+  return {
+    supplier: str(obj?.supplier),
+    invoiceNumber: str(obj?.invoiceNumber),
+    invoiceDate: str(obj?.invoiceDate),
+    items
+  };
+}
+
+// Wariant magazynowy: ilości ułamkowe przechodzą (kilogramy), kategorii nie zgadujemy,
+// a cena to zawsze netto. Wiersz bez nazwy albo bez dodatniej ilości odpada.
+function normalizeWarehouseResult(obj) {
+  const rawItems = Array.isArray(obj?.items) ? obj.items : [];
+  const items = rawItems
+    .map((it) => {
+      const qty = Number(it?.quantity);
+      const price = Number(it?.unitPriceNet);
+      return {
+        name: str(it?.name),
+        quantity: Number.isFinite(qty) && qty > 0 ? Math.round(qty * 1000) / 1000 : 0,
+        unit: str(it?.unit) || 'szt.',
+        unitPriceNet: Number.isFinite(price) && price > 0 ? Math.round(price * 100) / 100 : 0,
+        currency: str(it?.currency) || 'PLN'
+      };
+    })
+    .filter((it) => it.name && it.quantity > 0);
 
   return {
     supplier: str(obj?.supplier),

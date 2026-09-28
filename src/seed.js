@@ -126,7 +126,6 @@ async function run() {
   await db.collection(collections.quants).deleteMany({});
   await db.collection(collections.warehouses).deleteMany({});
   await db.collection(collections.reorderRules).deleteMany({});
-  await db.collection(collections.onboardingSteps).deleteMany({});
 
   // Drzewo lokalizacji „w stylu Odoo" (realne + wirtualne) zamiast płaskiej listy.
   const byCode = await seedStandardLocations(db);
@@ -163,27 +162,6 @@ async function run() {
     { scope: 'category', target: 'Lampy', minQty: 2, maxQty: 4, note: '', isActive: true, createdByEmail: 'seed', createdAt: now, updatedAt: now },
     { scope: 'item', target: 'M006', minQty: 1, maxQty: 2, note: '', isActive: true, createdByEmail: 'seed', createdAt: now, updatedAt: now }
   ]);
-
-  // Domyślne kroki onboardingu — pogrupowane po kategoriach. Postęp każdego
-  // użytkownika trzymany osobno (onboardingProgress), więc tu tylko szablon.
-  const onboardingSteps = [
-    // Konto i dostępy
-    { title: 'Odbierz służbowy adres e-mail', description: 'Zaloguj się na konto @maturalni.com i ustaw hasło oraz weryfikację dwuetapową.', category: 'Konto i dostępy', url: '', sortOrder: 10 },
-    { title: 'Dołącz do przestrzeni w Slacku', description: 'Zainstaluj Slacka i dołącz do kanałów #ogólny, #zaplecze i kanału swojego zespołu.', category: 'Konto i dostępy', url: '', sortOrder: 20 },
-    { title: 'Uzupełnij profil w zapleczu', description: 'Sprawdź, czy imię, nazwisko i rola w panelu Zaplecze są poprawne.', category: 'Konto i dostępy', url: '/v2', sortOrder: 30 },
-    // Sprzęt i narzędzia
-    { title: 'Odbierz sprzęt na start', description: 'Zgłoś się po laptop i akcesoria, a następnie sprawdź, czy widzisz je w zakładce „Mój sprzęt”.', category: 'Sprzęt i narzędzia', url: '/v2', sortOrder: 40 },
-    { title: 'Poznaj wypożyczanie sprzętu', description: 'Przejrzyj „Dostępny sprzęt” i wykonaj testowy wniosek o wypożyczenie.', category: 'Sprzęt i narzędzia', url: '/v2', sortOrder: 50 },
-    { title: 'Zainstaluj podstawowe narzędzia', description: 'Zainstaluj pakiet biurowy, przeglądarkę roboczą i menedżer haseł zgodnie z instrukcją zespołu.', category: 'Sprzęt i narzędzia', url: '', sortOrder: 60 },
-    // Wdrożenie
-    { title: 'Przeczytaj przewodnik pracownika', description: 'Zapoznaj się z zasadami pracy, urlopów i rozliczeń.', category: 'Wdrożenie', url: '', sortOrder: 70 },
-    { title: 'Spotkanie 1:1 z przełożonym', description: 'Umów pierwsze spotkanie wprowadzające i ustal cele na pierwszy miesiąc.', category: 'Wdrożenie', url: '', sortOrder: 80 },
-    { title: 'Przejdź szkolenie BHP i RODO', description: 'Ukończ obowiązkowe szkolenia wstępne i potwierdź zapoznanie.', category: 'Wdrożenie', url: '', sortOrder: 90 },
-    // Zespół i kultura
-    { title: 'Poznaj zespół', description: 'Przedstaw się na kanale zespołu i umów krótkie kawy powitalne.', category: 'Zespół i kultura', url: '', sortOrder: 100 },
-    { title: 'Dodaj się do kalendarza spotkań', description: 'Dołącz do cyklicznych spotkań zespołu i firmowych wydarzeń.', category: 'Zespół i kultura', url: '', sortOrder: 110 }
-  ].map((s) => ({ ...s, isActive: true, createdByEmail: 'seed', createdAt: now, updatedAt: now }));
-  await db.collection(collections.onboardingSteps).insertMany(onboardingSteps);
 
   console.log('Seed OK');
   await closeDb();

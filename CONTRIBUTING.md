@@ -8,7 +8,7 @@ Pracujemy na gałęziach tematycznych odbijanych od `main`. Nazwa: `typ/krótki-
 
 | Prefiks | Kiedy |
 |---|---|
-| `feat/…` | nowa funkcja (np. `feat/onboarding-til`) |
+| `feat/…` | nowa funkcja (np. `feat/magazyn-jednostki-miary`) |
 | `fix/…` | poprawka błędu (np. `fix/session-store-shared-client`) |
 | `chore/…` | zadania utrzymaniowe, CI, konfiguracja |
 | `test/…` | dodanie/rozszerzenie testów |
@@ -29,14 +29,14 @@ Opcjonalny akapit: co i dlaczego (nie „jak" — to widać w diffie).
 Przykłady z historii repo:
 
 ```
-feat(onboarding): optymistyczne akcje TiL pracownika (bez przeładowania listy)
+feat(magazyn): jednostki miary na produktach (szt./kg)
 fix(auth): session store współdzieli klienta Mongo + diagnostyka 401
 chore(ci): npm test + GitHub Actions (unit + integracyjne)
 test: pokrycie auth (bramki ról, /me, preferencje) + cykl życia wypożyczenia
 docs: pełny README (stack, env, role, moduły, testy)
 ```
 
-Typy: `feat`, `fix`, `chore`, `test`, `docs`, `refactor`. Zakres w nawiasie jest opcjonalny, ale pomaga (`auth`, `onboarding`, `magazyn`, `ci`).
+Typy: `feat`, `fix`, `chore`, `test`, `docs`, `refactor`. Zakres w nawiasie jest opcjonalny, ale pomaga (`auth`, `magazyn`, `licencje`, `ci`).
 
 ## Testy przed PR
 

@@ -10,13 +10,11 @@ import { ObjectId } from 'mongodb';
 import { getDb, connectToDatabase, getMongoClient } from './db.js';
 import { collections, ensureIndexes } from './schema.js';
 import { setupPassport, requireAuth, requireAdmin, requireManager, requireWarehouseRead } from './auth.js';
-import { LOCATION_KINDS, OPERATION_TYPES, RESERVING_OP_TYPES, validateOperation, reverseOperation, nextReference, isOperationType, computeReplenishment, replenishmentDraft, reservedQuantities, checkReservation, isReorderScope, isProtectedLocation, slugifyLocationCode, cascadeItemCodeRename, computeValuation, summarizeMovesByKind, computeGiftThresholdReport, GIFT_VAT_THRESHOLD, computeStockHealth, recomputeQuants, refreshItemCache, computeAging, computeConversionHistory, applyMove } from './stock.js';
+import { LOCATION_KINDS, OPERATION_TYPES, RESERVING_OP_TYPES, validateOperation, reverseOperation, nextReference, isOperationType, computeReplenishment, replenishmentDraft, reservedQuantities, checkReservation, isReorderScope, isProtectedLocation, slugifyLocationCode, cascadeItemCodeRename, computeValuation, summarizeMovesByKind, computeGiftThresholdReport, GIFT_VAT_THRESHOLD, computeStockHealth, recomputeQuants, refreshItemCache, computeAging, computeConversionHistory, applyMove, isStockableKind } from './stock.js';
 import { createOperationPdfDoc } from './operation-pdf.js';
 import { MANAGER_MAP } from './manager-map.js';
 import { licenseView } from './lib/licenses.js';
 import { registerLicenseRoutes } from './routes/licenses.js';
-import { onboardingStepComplete } from './lib/onboarding.js';
-import { registerOnboardingRoutes } from './routes/onboarding.js';
 import { normalizeItemCode } from './lib/item-code.js';
 import { WAREHOUSE_ONLY_CATEGORIES, isWarehouseCategory } from './lib/categories.js';
 import { registerTurboWeekendRoutes } from './routes/turbo-weekends.js';
@@ -25,7 +23,9 @@ import { registerIdentityRoutes } from './routes/identities.js';
 import { registerAccessRoutes } from './routes/accesses.js';
 import { personAccessHoldings } from './lib/access-queries.js';
 import { seedAccessMapDefaults } from './lib/access-seed.js';
-import { extractPdfText, extractItemsFromText } from './invoice-extract.js';
+import { extractPdfText, extractItemsFromText, extractWarehouseItemsFromText } from './invoice-extract.js';
+import { matchInvoiceLines, normalizeInvoiceName } from './lib/invoice-match.js';
+import { replayStockAt, endOfDay } from './stock-history.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -47,6 +47,7 @@ app.set('trust proxy', 1);
 const globalJson = express.json();
 app.use((req, res, next) => {
   if (req.path === '/admin/items/extract-invoice') return next();
+  if (req.path === '/warehouse/extract-invoice') return next();
   return globalJson(req, res, next);
 });
 app.use(express.urlencoded({ extended: true }));
@@ -730,6 +731,278 @@ app.get('/warehouse/stock', requireAuth, requireWarehouseRead, async (req, res) 
     a.itemCode.localeCompare(b.itemCode) || a.locationName.localeCompare(b.locationName));
 
   res.json(rows);
+});
+
+// ===== Import faktury zakupowej do Magazynu =====
+//
+// Faktura PDF -> pozycje -> dopasowanie do kartoteki -> projekt dokumentu PRZYJĘCIA.
+// Sens jest w cenie: `unitPrice` z przyjęcia zakłada partię cenową FIFO
+// (applyReceiptPriceBatches), więc faktura od razu buduje wycenę magazynu.
+// Ceny czytamy NETTO — VAT odliczamy, więc kosztem towaru jest netto.
+app.post(
+  '/warehouse/extract-invoice',
+  requireAuth,
+  requireAdmin,
+  express.json({ limit: '12mb' }),
+  async (req, res) => {
+    try {
+      const db = await getDb();
+      const { text, pages } = await extractPdfText(req.body?.fileBase64);
+      const extracted = await extractWarehouseItemsFromText(text);
+      if (!extracted.items.length) {
+        return res.status(422).json({ message: 'Nie znaleziono żadnych pozycji towarowych na fakturze.' });
+      }
+
+      // Dopasowujemy tylko do produktów magazynowych — elektronika należy do Sprzętu.
+      const all = await db.collection(collections.items)
+        .find({ isActive: { $ne: false } }, { projection: { itemCode: 1, name: 1, category: 1 } })
+        .toArray();
+      const products = all
+        .filter(it => isWarehouseCategory(it.category))
+        .map(it => ({ itemCode: it.itemCode, name: it.name || '', category: it.category || '' }));
+
+      const aliases = await db.collection(collections.invoiceAliases)
+        .find({}, { projection: { invoiceText: 1, itemCode: 1 } })
+        .toArray();
+
+      const lines = matchInvoiceLines({ items: extracted.items, products, aliases });
+
+      // Dostawca: podpowiadamy istniejącego, jeśli nazwa się pokrywa. Zakładanie
+      // nowego dzieje się dopiero przy tworzeniu dokumentu (POST .../from-invoice).
+      const suppliers = await db.collection(collections.suppliers)
+        .find({ isActive: { $ne: false } }, { projection: { name: 1 } }).toArray();
+      const supNorm = normalizeInvoiceName(extracted.supplier);
+      const supplierMatch = supNorm
+        ? suppliers.find(x => normalizeInvoiceName(x.name) === supNorm)
+        : null;
+
+      return res.json({
+        supplier: extracted.supplier,
+        supplierId: supplierMatch ? String(supplierMatch._id) : null,
+        invoiceNumber: extracted.invoiceNumber,
+        invoiceDate: extracted.invoiceDate,
+        lines,
+        matchedCount: lines.filter(l => l.suggestion).length,
+        pages
+      });
+    } catch (e) {
+      const status = Number(e?.status) || 500;
+      if (status >= 500) console.error('warehouse extract-invoice:', e?.message, e?.detail || e?.cause || '');
+      return res.status(status).json({ message: e?.message || 'Nie udało się odczytać faktury.' });
+    }
+  }
+);
+
+// Tworzy PROJEKT przyjęcia z rozpisanej faktury. Nic nie rusza stanu — dokument
+// powstaje jako wersja robocza i to człowiek go zatwierdza.
+//
+// Body: { supplierId?, supplierName?, invoiceNumber?, lines: [{ itemCode|null, invoiceName, quantity, unitPrice }] }
+//   • brak `supplierId`, a jest `supplierName` -> dostawca zakładany automatycznie,
+//   • pozycje bez `itemCode` trafiają do `pendingInvoiceLines` i BLOKUJĄ zatwierdzenie,
+//   • ręczne wskazanie produktu dla nazwy z faktury zapisuje się jako alias.
+app.post('/warehouse/operations/from-invoice', requireAuth, requireAdmin, async (req, res) => {
+  const db = await getDb();
+  const now = new Date();
+
+  const rawLines = Array.isArray(req.body?.lines) ? req.body.lines : null;
+  if (!rawLines || !rawLines.length) {
+    return res.status(400).json({ message: 'Body musi zawierać niepustą listę lines' });
+  }
+
+  // --- dostawca: istniejący albo zakładany z automatu ---
+  let supplierId = req.body.supplierId ? String(req.body.supplierId) : null;
+  let supplierCreated = false;
+  const supplierName = String(req.body.supplierName || '').trim();
+  if (!supplierId && supplierName) {
+    const norm = normalizeInvoiceName(supplierName);
+    const existing = (await db.collection(collections.suppliers)
+      .find({ isActive: { $ne: false } }, { projection: { name: 1 } }).toArray())
+      .find(x => normalizeInvoiceName(x.name) === norm);
+    if (existing) {
+      supplierId = String(existing._id);
+    } else {
+      const { insertedId } = await db.collection(collections.suppliers).insertOne({
+        name: supplierName, contact: '', notes: 'Założony automatycznie z faktury',
+        isActive: true, createdAt: now, updatedAt: now
+      });
+      supplierId = String(insertedId);
+      supplierCreated = true;
+    }
+  }
+
+  // --- pozycje: dopasowane wchodzą do dokumentu, reszta czeka na człowieka ---
+  const known = new Set((await db.collection(collections.items)
+    .find({ isActive: { $ne: false } }, { projection: { itemCode: 1 } }).toArray())
+    .map(it => it.itemCode));
+
+  const lines = [];
+  const pending = [];
+  for (const raw of rawLines) {
+    const itemCode = normalizeItemCode(raw?.itemCode);
+    const quantity = Number(raw?.quantity);
+    const unitPrice = Number(raw?.unitPrice);
+    const invoiceName = String(raw?.invoiceName || '').trim();
+    if (itemCode && known.has(itemCode) && Number.isFinite(quantity) && quantity > 0) {
+      lines.push({
+        itemCode,
+        quantity,
+        unitPrice: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(unitPrice * 100) / 100 : 0
+      });
+    } else {
+      pending.push({
+        invoiceName,
+        quantity: Number.isFinite(quantity) ? quantity : 0,
+        unitPrice: Number.isFinite(unitPrice) ? unitPrice : 0,
+        reason: itemCode && !known.has(itemCode) ? 'Nieznany kod produktu' : 'Brak wskazanego produktu'
+      });
+    }
+  }
+
+  // --- zapamiętaj ręczne dopasowania jako aliasy (uczy kolejny import) ---
+  const aliasOps = rawLines
+    .filter(l => normalizeItemCode(l?.itemCode) && String(l?.invoiceName || '').trim())
+    .map(l => ({
+      updateOne: {
+        filter: { normalized: normalizeInvoiceName(l.invoiceName) },
+        update: {
+          $set: {
+            normalized: normalizeInvoiceName(l.invoiceName),
+            invoiceText: String(l.invoiceName).trim(),
+            itemCode: normalizeItemCode(l.itemCode),
+            updatedAt: now,
+            updatedByEmail: req.user?.email || null
+          },
+          $setOnInsert: { createdAt: now }
+        },
+        upsert: true
+      }
+    }))
+    .filter(op => op.updateOne.filter.normalized);
+  if (aliasOps.length) await db.collection(collections.invoiceAliases).bulkWrite(aliasOps);
+
+  // --- dokument: przyjęcie od Dostawców na Magazyn, jak przy ręcznym „Nowa operacja" ---
+  const [supplierLoc, stockLoc] = await Promise.all([
+    db.collection(collections.locations).findOne({ kind: LOCATION_KINDS.SUPPLIER }),
+    db.collection(collections.locations).findOne({ code: 'WH/Stock' })
+  ]);
+
+  const reference = await nextReference(db, 'receipt');
+  const doc = {
+    type: 'receipt',
+    reference,
+    state: 'draft',
+    fromLocationId: supplierLoc ? String(supplierLoc._id) : null,
+    toLocationId: stockLoc ? String(stockLoc._id) : null,
+    supplierId,
+    contact: '',
+    sourceDocument: String(req.body.invoiceNumber || '').trim(),
+    lines,
+    // Ślad pochodzenia: dokument powstał z faktury, a te pozycje wciąż nie mają produktu.
+    fromInvoice: true,
+    pendingInvoiceLines: pending,
+    createdAt: now,
+    updatedAt: now,
+    createdByEmail: req.user?.email || null
+  };
+  const { insertedId } = await db.collection(collections.stockOperations).insertOne(doc);
+
+  res.status(201).json({
+    id: String(insertedId),
+    reference,
+    linesCount: lines.length,
+    pendingCount: pending.length,
+    supplierId,
+    supplierCreated,
+    message: pending.length
+      ? `Utworzono ${reference}. ${pending.length} ${pending.length === 1 ? 'pozycja czeka' : 'pozycji czeka'} na wskazanie produktu.`
+      : `Utworzono ${reference} z ${lines.length} pozycjami.`
+  });
+});
+
+// Stan magazynu na wskazany dzień (?date=RRRR-MM-DD). Przewija rejestr ruchów do
+// końca tego dnia — patrz src/stock-history.js. Ilości są dokładne; wycena FIFO jest
+// odtwarzana z dokumentów i każdy produkt niesie `valueExact`, gdy się to nie udało.
+app.get('/warehouse/stock-at', requireAuth, requireWarehouseRead, async (req, res) => {
+  const db = await getDb();
+
+  const at = endOfDay(req.query.date);
+  if (!at) return res.status(400).json({ message: 'Podaj datę w formacie RRRR-MM-DD' });
+  if (at.getTime() > Date.now()) {
+    return res.status(400).json({ message: 'Data z przyszłości — stan można odtworzyć najdalej na dziś' });
+  }
+
+  const locations = await db.collection(collections.locations).find({}).toArray();
+  const locById = new Map(locations.map(l => [String(l._id), l]));
+
+  const moves = await db.collection(collections.stockMoves)
+    .find({ doneAt: { $lte: at } })
+    .sort({ doneAt: 1, _id: 1 })
+    .toArray();
+
+  const operationIds = [...new Set(moves.map(m => m.operationId).filter(Boolean))];
+  const operations = operationIds.length
+    ? await db.collection(collections.stockOperations)
+        .find(
+          { _id: { $in: operationIds.map(id => { try { return new ObjectId(id); } catch { return null; } }).filter(Boolean) } },
+          { projection: { type: 1, lines: 1, deliveryDetail: 1, scrapDetail: 1, conversionDetail: 1, adjustmentDetail: 1 } }
+        ).toArray()
+    : [];
+  const opById = new Map(operations.map(o => [String(o._id), o]));
+
+  const { rows, byItem } = replayStockAt({
+    moves,
+    locations: locations.map(l => ({ id: String(l._id), kind: l.kind })),
+    opById
+  });
+
+  const itemCodes = [...new Set(rows.map(r => r.itemCode))];
+  const items = itemCodes.length
+    ? await db.collection(collections.items)
+        .find({ itemCode: { $in: itemCodes } },
+          { projection: { itemCode: 1, name: 1, category: 1, unit: 1 } })
+        .toArray()
+    : [];
+  const itemByCode = new Map(items.map(it => [it.itemCode, it]));
+
+  // Jak w GET /warehouse/stock: tylko lokalizacje realne i tylko kategorie magazynowe.
+  const out = rows
+    .filter(r => r.quantity > 0)
+    .filter(r => isStockableKind(locById.get(r.locationId)?.kind))
+    .filter(r => isWarehouseCategory(itemByCode.get(r.itemCode)?.category))
+    .map(r => {
+      const it = itemByCode.get(r.itemCode) || {};
+      const agg = byItem.get(r.itemCode);
+      // Wartość pozycji rozdzielamy na lokalizacje proporcjonalnie do ilości — warstwy
+      // FIFO są prowadzone per produkt, nie per lokalizacja (tak samo jak priceBatches).
+      const unit = agg && agg.quantity > 0 ? agg.value / agg.quantity : 0;
+      return {
+        itemCode: r.itemCode,
+        name: it.name || '',
+        category: it.category || '',
+        unit: it.unit || 'szt.',
+        locationId: r.locationId,
+        locationName: locById.get(r.locationId)?.name || '',
+        locationCode: locById.get(r.locationId)?.code || '',
+        lot: r.lot || null,
+        quantity: r.quantity,
+        unitValue: Math.round(unit * 100) / 100,
+        value: Math.round(r.quantity * unit * 100) / 100,
+        valueExact: agg ? agg.valueExact : false
+      };
+    })
+    .sort((a, b) => a.itemCode.localeCompare(b.itemCode) || a.locationName.localeCompare(b.locationName));
+
+  const totalValue = out.reduce((s, r) => s + r.value, 0);
+  res.json({
+    date: req.query.date,
+    rows: out,
+    totalValue: Math.round(totalValue * 100) / 100,
+    totalQuantity: Math.round(out.reduce((s, r) => s + r.quantity, 0) * 1000) / 1000,
+    // Ile pozycji ma wycenę tylko przybliżoną — UI to sygnalizuje, żeby nikt nie brał
+    // takiego eksportu za dokument księgowy bez zastrzeżeń.
+    inexactCount: new Set(out.filter(r => !r.valueExact).map(r => r.itemCode)).size,
+    movesReplayed: moves.length
+  });
 });
 
 // Historia ruchów (rejestr). Opcjonalne: ?itemCode=&limit=.
@@ -1558,6 +1831,10 @@ async function loadOperationDetail(db, id) {
     scheduledAt: op.scheduledAt || null,
     sourceDocument: op.sourceDocument || '',
     note: op.note || '',
+    // Ślad importu z faktury: edytor pokazuje niedopasowane pozycje osobną sekcją,
+    // a zatwierdzenie jest zablokowane, dopóki lista nie jest pusta.
+    fromInvoice: !!op.fromInvoice,
+    pendingInvoiceLines: Array.isArray(op.pendingInvoiceLines) ? op.pendingInvoiceLines : [],
     lines: (op.lines || []).map(l => ({
       itemCode: l.itemCode,
       itemName: nameByCode.get(l.itemCode) || '',
@@ -1660,6 +1937,18 @@ app.patch('/warehouse/operations/:id', requireAuth, requireAdmin, async (req, re
   if (req.body.sourceDocument !== undefined) update.sourceDocument = String(req.body.sourceDocument || '').trim();
   if (req.body.note !== undefined) update.note = String(req.body.note || '').trim();
   if (req.body.lines !== undefined) update.lines = normalizeOperationLines(op.type, req.body.lines);
+  // Pozycje z faktury, którym wciąż brakuje produktu. Frontend odsyła tę listę po
+  // każdym rozwiązanym wierszu; pusta odblokowuje zatwierdzenie (patrz validateOperation).
+  if (req.body.pendingInvoiceLines !== undefined) {
+    update.pendingInvoiceLines = (Array.isArray(req.body.pendingInvoiceLines) ? req.body.pendingInvoiceLines : [])
+      .map(l => ({
+        invoiceName: String(l?.invoiceName || '').trim(),
+        quantity: Number(l?.quantity) || 0,
+        unitPrice: Number(l?.unitPrice) || 0,
+        reason: String(l?.reason || '').trim()
+      }))
+      .filter(l => l.invoiceName);
+  }
   if (req.body.state === 'ready' || req.body.state === 'draft') update.state = req.body.state;
 
   // Rezerwacja przy commit: nie pozwól przejść w „ready", gdy zapotrzebowanie operacji
@@ -3100,21 +3389,18 @@ function plForm(n, one, few, many) {
   return many;
 }
 const plPozycje = (n) => plForm(n, 'pozycja', 'pozycje', 'pozycji');
-const plProsby = (n) => plForm(n, 'prośba', 'prośby', 'próśb');
-const plOsoby = (n) => plForm(n, 'osoba', 'osoby', 'osób');
 const plWnioski = (n) => plForm(n, 'wniosek', 'wnioski', 'wniosków');
 
 // Pulpit — skonsolidowane alerty „co wymaga uwagi" w jednym miejscu, zamiast klikania
 // po zakładkach. Agreguje po stronie serwera: braki magazynowe (reguły poniżej minimum),
 // starzejący się stan (>180 dni), licencje przeterminowane / do odnowienia (≤30 dni),
-// prośby o dostęp w onboardingu (TiL: „requested"), osoby w trakcie onboardingu,
 // wnioski oczekujące na decyzję oraz gwarancje wygasające (≤30 dni). Zwraca tylko
 // niepuste grupy; `view` wskazuje zakładkę do przejścia w SPA. Tylko admin.
 app.get('/admin/alerts', requireAuth, requireAdmin, async (_req, res) => {
   const db = await getDb();
   const now = new Date();
 
-  const [replen, agingReport, licenses, onbPeople, tilRequested, pendingReqCount, warrantyDocs] = await Promise.all([
+  const [replen, agingReport, licenses, pendingReqCount, warrantyDocs] = await Promise.all([
     computeReplenishment(db),
     (async () => {
       const items = (await db.collection(collections.items)
@@ -3123,10 +3409,6 @@ app.get('/admin/alerts', requireAuth, requireAdmin, async (_req, res) => {
       return computeAging(items, now);
     })(),
     db.collection(collections.licenses).find({ isActive: { $ne: false } }).toArray(),
-    db.collection(collections.users)
-      .find({ onboardingStatus: 'in_progress' }, { projection: { email: 1, fullName: 1, onboardingStartedAt: 1 } })
-      .sort({ onboardingStartedAt: 1 }).toArray(),
-    db.collection(collections.onboardingProgress).countDocuments({ state: 'requested' }),
     db.collection(collections.loanRequests).countDocuments({ status: { $in: ACTIVE_REQUEST_STATUSES } }),
     db.collection(collections.items)
       .find({ isActive: { $ne: false }, warrantyUntil: { $nin: [null, ''] } },
@@ -3195,49 +3477,7 @@ app.get('/admin/alerts', requireAuth, requireAdmin, async (_req, res) => {
     });
   }
 
-  // 4. Prośby o dostęp/sprzęt w onboardingu (TiL) czekające na przyznanie.
-  if (tilRequested > 0) {
-    alerts.push({
-      key: 'til-requested', severity: 'danger', view: 'onboarding',
-      title: 'Prośby o dostęp (onboarding)',
-      count: tilRequested,
-      hint: `${tilRequested} ${plProsby(tilRequested)} czeka na przyznanie`,
-      items: []
-    });
-  }
-
-  // 5. Osoby w trakcie onboardingu (postęp < 100%).
-  if (onbPeople.length) {
-    const stepsTotal = await db.collection(collections.onboardingSteps).countDocuments({ isActive: { $ne: false } });
-    const emails = onbPeople.map(p => p.email);
-    const progress = emails.length
-      ? await db.collection(collections.onboardingProgress).find({ userEmail: { $in: emails } }).toArray()
-      : [];
-    const steps = await db.collection(collections.onboardingSteps)
-      .find({ isActive: { $ne: false } }, { projection: { owner: 1 } }).toArray();
-    const byUser = new Map();
-    for (const p of progress) {
-      if (!byUser.has(p.userEmail)) byUser.set(p.userEmail, new Map());
-      byUser.get(p.userEmail).set(String(p.stepId), p);
-    }
-    const rows = onbPeople.map(u => {
-      const prog = byUser.get(u.email) || new Map();
-      const done = steps.filter(s => onboardingStepComplete({ owner: s.owner === 'til' ? 'til' : 'self' }, prog.get(String(s._id)))).length;
-      const pct = stepsTotal ? Math.round((done / stepsTotal) * 100) : 0;
-      return { fullName: u.fullName || u.email, pct };
-    }).filter(r => r.pct < 100).sort((a, b) => a.pct - b.pct);
-    if (rows.length) {
-      alerts.push({
-        key: 'onboarding', severity: 'warn', view: 'onboarding',
-        title: 'Onboarding w toku',
-        count: rows.length,
-        hint: `${rows.length} ${plOsoby(rows.length)} nie zakończyło`,
-        items: rows.slice(0, 8).map(r => ({ label: r.fullName, meta: `${r.pct}%` }))
-      });
-    }
-  }
-
-  // 6. Wnioski o wypożyczenie/zakup oczekujące na decyzję.
+  // 4. Wnioski o wypożyczenie/zakup oczekujące na decyzję.
   if (pendingReqCount > 0) {
     alerts.push({
       key: 'requests', severity: 'warn', view: 'skrzynka',
@@ -3248,7 +3488,7 @@ app.get('/admin/alerts', requireAuth, requireAdmin, async (_req, res) => {
     });
   }
 
-  // 7. Gwarancje wygasające (≤30 dni, w tym już wygasłe).
+  // 5. Gwarancje wygasające (≤30 dni, w tym już wygasłe).
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const dayMs = 24 * 60 * 60 * 1000;
   const warranty = warrantyDocs
@@ -3460,19 +3700,17 @@ app.delete('/admin/users/:email', requireAuth, requireAdmin, async (req, res) =>
 // ===================== OFF-BOARDING =====================
 // Odejście pracownika: konto Google jest kasowane z Workspace zewnętrznie, więc nie
 // blokujemy tu logowania — off-boarding służy do UPORZĄDKOWANIA tego, co osoba wciąż
-// „trzyma" w systemie (sprzęt, licencje, przyznane dostępy TiL) i do dezaktywacji
-// konta, żeby zniknęło z list wyboru (kierownik/przypisania) i z paneli onboardingu.
+// „trzyma" w systemie (sprzęt, licencje, dostępy z mapy dostępów) i do dezaktywacji
+// konta, żeby zniknęło z list wyboru (kierownik/przypisania).
 
 // Zbiera wszystko, co jest powiązane z odchodzącą osobą. Czyste odczyty — używane
 // zarówno przez podgląd (GET) jak i do policzenia zakresu sprzątania przy „Zakończ".
 async function collectOffboardingHoldings(db, email) {
-  const [loans, licensesAll, accessProg] = await Promise.all([
+  const [loans, licensesAll] = await Promise.all([
     db.collection(collections.loans)
       .find({ userEmail: email, status: 'active' }, { projection: { itemCode: 1, itemName: 1, quantity: 1, borrowedAt: 1 } })
       .sort({ borrowedAt: -1 }).toArray(),
-    db.collection(collections.licenses).find({ isActive: { $ne: false } }).toArray(),
-    db.collection(collections.onboardingProgress)
-      .find({ userEmail: email, state: { $in: ['granted', 'confirmed'] } }).toArray()
+    db.collection(collections.licenses).find({ isActive: { $ne: false } }).toArray()
   ]);
 
   const loanCodes = new Set(loans.map(l => String(l.itemCode || '').trim().toUpperCase()).filter(Boolean));
@@ -3497,15 +3735,6 @@ async function collectOffboardingHoldings(db, email) {
     .some(a => String(a || '').trim().toLowerCase() === em));
   const owned = licensesAll.filter(l => String(l.ownerEmail || '').toLowerCase() === em);
 
-  const stepIds = accessProg.map(p => p.stepId).filter(Boolean);
-  const steps = stepIds.length
-    ? await db.collection(collections.onboardingSteps)
-        .find({ _id: { $in: stepIds.map(id => { try { return new ObjectId(id); } catch { return null; } }).filter(Boolean) } },
-          { projection: { title: 1 } }).toArray()
-    : [];
-  const titleById = new Map(steps.map(s => [String(s._id), s.title || '']));
-  const accesses = accessProg.map(p => ({ stepId: String(p.stepId), title: titleById.get(String(p.stepId)) || '(krok)', state: p.state }));
-
   // === Mapa dostępów ===
   // Realne dostępy (osoba × licencja) do cofnięcia oraz tożsamości, których osoba
   // jest właścicielem — te wymagają PRZENIESIENIA własności, nie odebrania.
@@ -3516,7 +3745,6 @@ async function collectOffboardingHoldings(db, email) {
     legacyItems: legacyItems.map(it => ({ itemCode: it.itemCode, name: it.name || '' })),
     seats: seats.map(l => ({ id: String(l._id), name: l.name || '' })),
     owned: owned.map(l => ({ id: String(l._id), name: l.name || '' })),
-    accesses,
     mapAccesses,
     ownedIdentities
   };
@@ -3527,24 +3755,23 @@ app.get('/admin/offboarding/:email', requireAuth, requireAdmin, async (req, res)
   const email = String(req.params.email || '').trim().toLowerCase();
   const user = await db.collection(collections.users).findOne(
     { email },
-    { projection: { email: 1, fullName: 1, role: 1, isActive: 1, offboardedAt: 1, onboardingStatus: 1 } }
+    { projection: { email: 1, fullName: 1, role: 1, isActive: 1, offboardedAt: 1 } }
   );
   if (!user) return res.status(404).json({ message: 'Nie znaleziono użytkownika' });
   const holdings = await collectOffboardingHoldings(db, email);
   res.json({
     user: {
       email: user.email, fullName: user.fullName || user.email, role: user.role || 'user',
-      isActive: user.isActive !== false, offboardedAt: user.offboardedAt || null,
-      onboardingStatus: user.onboardingStatus || null
+      isActive: user.isActive !== false, offboardedAt: user.offboardedAt || null
     },
     ...holdings,
     total: holdings.loans.length + holdings.legacyItems.length + holdings.seats.length + holdings.owned.length
-      + holdings.accesses.length + holdings.mapAccesses.length + holdings.ownedIdentities.length
+      + holdings.mapAccesses.length + holdings.ownedIdentities.length
   });
 });
 
 // „Zakończ off-boarding": oddaje cały sprzęt do magazynu, zdejmuje osobę z licencji
-// (miejsca + zwolnienie właściciela), cofa przyznane dostępy TiL do stanu wyjściowego,
+// (miejsca + zwolnienie właściciela), oznacza jej dostępy jako odebrane,
 // odpina bezpośrednich podwładnych i dezaktywuje konto. Idempotentne dla części, które
 // są już czyste. Nie można off-boardować samego siebie.
 app.post('/admin/offboarding/:email/finish', requireAuth, requireAdmin, async (req, res) => {
@@ -3588,15 +3815,7 @@ app.post('/admin/offboarding/:email/finish', requireAuth, requireAdmin, async (r
     );
   }
 
-  // 4. Cofnij przyznane dostępy TiL do stanu wyjściowego (pending).
-  if (holdings.accesses.length) {
-    await db.collection(collections.onboardingProgress).updateMany(
-      { userEmail: email, state: { $in: ['granted', 'confirmed'] } },
-      { $set: { state: 'pending', updatedAt: now } }
-    );
-  }
-
-  // 4b. Mapa dostępów: oznacz realne dostępy osoby jako „Odebrany". Tożsamości,
+  // 4. Mapa dostępów: oznacz realne dostępy osoby jako „Odebrany". Tożsamości,
   // których jest właścicielem, ŚWIADOMIE zostawiamy — wymagają przeniesienia
   // własności (ręcznie), nie odebrania; raportujemy je tylko w podsumowaniu.
   if (holdings.mapAccesses.length) {
@@ -3610,7 +3829,7 @@ app.post('/admin/offboarding/:email/finish', requireAuth, requireAdmin, async (r
   await db.collection(collections.users).updateMany({ managerEmail: email }, { $set: { managerEmail: null } });
   await db.collection(collections.users).updateOne(
     { email },
-    { $set: { isActive: false, onboardingStatus: 'offboarded', offboardedAt: now, offboardedByEmail: req.user.email, updatedAt: now } }
+    { $set: { isActive: false, offboardedAt: now, offboardedByEmail: req.user.email, updatedAt: now } }
   );
 
   const summary = {
@@ -3618,7 +3837,6 @@ app.post('/admin/offboarding/:email/finish', requireAuth, requireAdmin, async (r
     itemsUnassigned: holdings.legacyItems.length,
     licenseSeatsRemoved: holdings.seats.length,
     licensesOwnershipCleared: holdings.owned.length,
-    accessesRevoked: holdings.accesses.length,
     mapAccessesRevoked: holdings.mapAccesses.length,
     identitiesToTransfer: holdings.ownedIdentities.length
   };
@@ -4865,10 +5083,6 @@ app.get('/admin/audit-logs', requireAuth, requireAdmin, async (req, res) => {
 // ===================== LICENCJE / SUBSKRYPCJE =====================
 // Logika domenowa → src/lib/licenses.js; trasy → src/routes/licenses.js.
 registerLicenseRoutes(app);
-
-// ===================== ONBOARDING =====================
-// Logika domenowa → src/lib/onboarding.js; trasy → src/routes/onboarding.js.
-registerOnboardingRoutes(app);
 
 // Lista eventów TW (dla mapy i listy busów).
 // ===================== WYJAZDY (Turbo Weekend / pakowanie) =====================
