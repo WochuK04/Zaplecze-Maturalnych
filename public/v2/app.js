@@ -754,32 +754,6 @@
         invalidate(['history']); toast('Zgłoszenie wysłane.');
       }
     },
-    newOp: {
-      eyebrow: 'Magazyn · Operacje', title: (ctx) => 'Nowa operacja: ' + (ctx.typeLabel || ''),
-      hint: 'Utwórz wersję roboczą — pozycje dodasz w następnym kroku.', cta: 'Utwórz wersję roboczą',
-      fields: (ctx) => {
-        const f = ctx.form || {};
-        const locOpts = (sel) => optList(f.locations || [], (l) => l.id, (l) => l.name, sel);
-        const party = ctx.type === 'receipt'
-          ? `<label class="field"><span>Dostawca</span><select name="supplierId"><option value="">— brak —</option>${optList(f.suppliers || [], (s) => s.id, (s) => s.name)}</select></label>`
-          : ctx.type === 'delivery'
-            ? `<label class="field"><span>Miejsce dostawy</span><select name="destinationId"><option value="">— brak —</option>${optList(f.deliveryDestinations || [], (d) => d.id, (d) => d.name)}</select></label>`
-            : '';
-        return `<div class="field-2">
-            <label class="field"><span>Z lokalizacji</span><select name="fromLocationId"><option value="">— domyślna —</option>${locOpts()}</select></label>
-            <label class="field"><span>Do lokalizacji</span><select name="toLocationId"><option value="">— domyślna —</option>${locOpts()}</select></label>
-          </div>
-          ${party}
-          <label class="field"><span>Kontakt</span><input name="contact" placeholder="np. dostawca / pracownik"></label>
-          <label class="field"><span>Dokument źródłowy</span><input name="sourceDocument" placeholder="np. nr faktury / zamówienia"></label>`;
-      },
-      submit: async (data, ctx) => {
-        const r = await api('/warehouse/operations', { method: 'POST', body: JSON.stringify(Object.assign({ type: ctx.type }, data)) });
-        state.mag.formData = null;
-        toast('Utworzono ' + (r.reference || 'wersję roboczą') + '.');
-        setTimeout(() => openOpEditor(r.id), 60);
-      }
-    },
     quickProduct: {
       eyebrow: 'Magazyn · Konwersja', title: 'Nowy produkt (cel konwersji)',
       hint: 'Utwórz produkt magazynowy, na który przetwarzasz. Koszt przeniesie sama konwersja.', cta: 'Utwórz',
@@ -2194,12 +2168,18 @@
     loadMagazyn();
   }
 
+  // „Nowa operacja" zakłada wersję roboczą od razu i otwiera panel dokumentu.
+  // Pośredni formularz nie wnosił nic, czego nie da się ustawić w samym panelu
+  // (lokalizacje, dostawca, kontakt, dokument źródłowy), a dokładał jeden krok
+  // przed jedyną rzeczą, po którą się tu wchodzi — dodaniem pozycji.
   async function openNewOp(type) {
     try {
-      const form = await magForm();
-      const cfg = (form.types || {})[type] || {};
-      openSheet('newOp', { type, typeLabel: cfg.label || 'Operacja', form });
-    } catch (e) { toast(e.message || 'Nie udało się otworzyć formularza.', true); }
+      const r = await api('/warehouse/operations', { method: 'POST', body: JSON.stringify({ type }) });
+      state.mag.formData = null;
+      toast('Utworzono ' + (r.reference || 'wersję roboczą') + '.');
+      await openOpEditor(r.id);
+      if (state.magTab === 'operacje') renderOperacje();
+    } catch (e) { toast(e.message || 'Nie udało się utworzyć operacji.', true); }
   }
 
   // ---- Produkty
