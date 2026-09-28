@@ -15,7 +15,7 @@ import { createOperationPdfDoc } from './operation-pdf.js';
 import { MANAGER_MAP } from './manager-map.js';
 import { licenseView } from './lib/licenses.js';
 import { registerLicenseRoutes } from './routes/licenses.js';
-import { normalizeItemCode } from './lib/item-code.js';
+import { normalizeItemCode, itemCodePrefix } from './lib/item-code.js';
 import { UNITS, normalizeUnit, normalizeQty, normalizeQtyOrZero } from './lib/units.js';
 import { WAREHOUSE_ONLY_CATEGORIES, isWarehouseCategory } from './lib/categories.js';
 import { registerTurboWeekendRoutes } from './routes/turbo-weekends.js';
@@ -292,14 +292,6 @@ async function resolveApproverEmail(db, requesterEmail) {
 // Generuje unikalny kod sprzętu dla pozycji dodawanej z wniosku o zakup.
 // Prefiks z kategorii (bez polskich znaków), reszta z czasu/losowości.
 // Prefiks kodu z kategorii (bez polskich znaków), np. „Towar"→TOWA, „gadżet"→GADZ.
-function itemCodePrefix(category) {
-  return String(category || 'ZAK')
-    .normalize('NFD')
-    .replace(/[^A-Za-z0-9]/g, '')
-    .slice(0, 4)
-    .toUpperCase() || 'ZAK';
-}
-
 async function generatePurchaseItemCode(db, category) {
   const prefix = itemCodePrefix(category);
 
