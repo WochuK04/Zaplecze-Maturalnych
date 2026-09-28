@@ -122,6 +122,8 @@ Bez klucza oba importy przyjmują ścieżki do ręcznych eksportów `.xlsx` z Od
 
 **Co się scala, a co nie.** Kartoteki o tej samej nazwie i tej samej kategorii (`G039` + `G046` „Arkusz polski e8") to jeden produkt kupiony w transzach — scalamy je, a każda kartoteka zostaje osobną partią cenową. Para Towar↔gadżet o tej samej nazwie (`T003` + `G060`) to **nie** duplikat, tylko ślad przetworzenia towaru w gadżet; te zostają osobno, bo inaczej znika historia przetworzeń i raport „prezenty ≤20 zł". Kody wchłonięte lądują w `items.mergedCodes` i są kaskadowo przepisane w ruchach, stanie i operacjach.
 
+**Wyrównanie do Odoo.** Odoo potrafi być wewnętrznie niespójne — `qty_available` mówi 5, a suma jego własnych ruchów 4, bo ktoś poprawił stan z ręki. Import przyjmuje `qty_available` za prawdę i domyka różnicę dokumentem `odoo/ADJ-WYR/00001`, ruszając wyłącznie rejestrem: partie cenowe przyszły właśnie z `qty_available`, więc korekta inwentarzowa z zaplecza policzyłaby tę różnicę drugi raz. Rozbieżności są wypisywane w raporcie — warto sprawdzić w Odoo, która liczba jest prawdziwa.
+
 **Historia przetworzeń.** Odoo nie ma dokumentu „przetworzenie" — magazyn robi to dwiema korektami stanu (minus na kartotece towaru, plus na kartotece gadżetu chwilę później). `odoo-historia.mjs` paruje je w operacje typu `conversion`, widoczne w Magazyn → Raportowanie → **Przetworzenia**. Dokumenty z importu są oznaczone `importedFrom: 'odoo'` i nie da się ich cofnąć — to zapis zdarzeń, nie operacja do odwracania.
 
 ## Dostęp do Magazynu

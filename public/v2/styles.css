@@ -582,3 +582,8 @@ table.wtable tbody tr.click:hover{background:var(--surface-hover);}
 .alert-item{display:flex;align-items:baseline;justify-content:space-between;gap:10px;font-size:12.5px;}
 .ai-label{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .ai-meta{color:var(--muted);flex:0 0 auto;font-variant-numeric:tabular-nums;}
+
+/* Checkbox „Magazyn" w panelu Użytkownicy — imienna lista dostępu do modułu. */
+.wh-access { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.wh-access input { width: 16px; height: 16px; accent-color: var(--accent, #5B6ABF); cursor: pointer; }
+.wh-access input:disabled { cursor: not-allowed; opacity: .55; }

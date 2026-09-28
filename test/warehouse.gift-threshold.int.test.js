@@ -81,11 +81,11 @@ test('domyślny próg 20 zł zwraca tylko gadżet z konwersji powyżej progu', a
   assert.equal(json.summary.conversionItemCount, 2);
 });
 
-test('wymaga autoryzacji odczytu (viewer nie ma 403)', async () => {
-  const viewerServer = await startServer({ email: 'v@maturalni.com', role: 'viewer' });
+test('wymaga autoryzacji odczytu (viewer z listy dostępu nie ma 403)', async () => {
+  const viewerServer = await startServer({ email: 'v@maturalni.com', role: 'viewer', warehouseAccess: true });
   const { status } = await get(viewerServer, '/warehouse/gift-threshold');
   await new Promise(r => viewerServer.close(r));
-  assert.equal(status, 200); // viewer ma requireWarehouseRead
+  assert.equal(status, 200); // viewer ma requireWarehouseRead, a lista wpuszcza do modułu
 });
 
 test('konfigurowalny próg przez ?threshold=', async () => {

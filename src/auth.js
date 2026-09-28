@@ -126,3 +126,27 @@ export function requireWarehouseRead(req, res, next) {
 
   return res.status(403).json({ message: 'Brak dostępu do magazynu' });
 }
+
+// Imienna lista dostępu do Magazynu. Rola mówi, CO wolno (podgląd vs. operacje),
+// a ta flaga — KTO w ogóle wchodzi do modułu. Rozdzielone celowo: kierownik działu
+// bez magazynu to normalna sytuacja, a rola sama tego nie wyrazi.
+//
+// Domyślnie BRAK dostępu: pole nieustawione znaczy „nie ma", bo lista ma z
+// założenia obejmować kilka osób, a nie wszystkich poza wyjątkami. Admin wchodzi
+// zawsze — inaczej pierwszy odznaczony admin zamyka moduł dla całej firmy i
+// odblokowanie wymaga wejścia do bazy.
+export function hasWarehouseAccess(user) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  return user.warehouseAccess === true;
+}
+
+// Bramka całego modułu — wpinana prefiksem (`app.use('/warehouse', …)`), a nie
+// trasa po trasie, żeby każdy nowy endpoint był objęty bez pamiętania o tym.
+export function requireWarehouseAccess(req, res, next) {
+  if (req.isAuthenticated && req.isAuthenticated() && hasWarehouseAccess(req.user)) {
+    return next();
+  }
+
+  return res.status(403).json({ message: 'Brak dostępu do Magazynu — poproś administratora o dopisanie do listy' });
+}
