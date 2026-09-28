@@ -145,6 +145,7 @@ const raport = {
   brakujaceKartoteki: [],
   operacje: {},
   ruchow: 0,
+  licznikiNumeracji: {},
   usunieteStanyOtwarcia: 0,
   rozbieznosciStanu: []
 };
@@ -423,9 +424,30 @@ if (doWyrownania.length) {
 raport.operacje = dokOps.reduce((a, o) => ({ ...a, [o.type]: (a[o.type] || 0) + 1 }), {});
 raport.ruchow = dokMoves.length;
 
+// Liczniki numeracji muszą przeskoczyć za najwyższy zaimportowany numer.
+// Dokumenty z Odoo niosą własne odnośniki (`mag/IN/00056`), a `reference` ma
+// indeks unikalny — licznik zostawiony na zerze sprawiał, że pierwsza operacja
+// zakładana w aplikacji dostawała numer już zajęty i zapis się wywracał.
+const maxNumeru = new Map();
+for (const o of dokOps) {
+  const m = /^(.*)\/(\d+)$/.exec(String(o.reference || ''));
+  if (!m) continue;
+  const [, prefiks, numer] = m;
+  maxNumeru.set(prefiks, Math.max(maxNumeru.get(prefiks) || 0, Number(numer)));
+}
+raport.licznikiNumeracji = Object.fromEntries(maxNumeru);
+
 if (ZAPISZ) {
   if (dokOps.length) await ops.insertMany(dokOps);
   if (dokMoves.length) await moves.insertMany(dokMoves);
+  for (const [prefiks, numer] of maxNumeru) {
+    const biezacy = await db.collection(collections.counters).findOne({ _id: `ref:${prefiks}` });
+    if (!biezacy || (biezacy.seq || 0) < numer) {
+      await db.collection(collections.counters).updateOne(
+        { _id: `ref:${prefiks}` }, { $set: { seq: numer } }, { upsert: true }
+      );
+    }
+  }
   await recomputeQuants(db);
   for (const kod of potrzebneKody) await refreshItemCache(db, kod);
 }
