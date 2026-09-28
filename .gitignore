@@ -1,3 +1,18 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Lokalne materiały robocze (briefy, transkrypcje, eksporty) — nie do repo
+Materiały do gitignore/
+Nowy wygląd/
+Omówienie briefu*.md
+
+# Narzędzia
+.claude/
+.vercel
 .env
+.env.local
+
+# Artefakty lokalne
 scripts/migrate-uzywaja.report.json
 qa-harness.mjs
