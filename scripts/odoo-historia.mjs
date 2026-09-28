@@ -315,24 +315,22 @@ for (const [k, grupa] of wgKorekty) {
   }
 }
 
-raport.operacje = dokOps.reduce((a, o) => ({ ...a, [o.type]: (a[o.type] || 0) + 1 }), {});
-raport.ruchow = dokMoves.length;
-
-if (ZAPISZ) {
-  if (dokOps.length) await ops.insertMany(dokOps);
-  if (dokMoves.length) await moves.insertMany(dokMoves);
-  await recomputeQuants(db);
-  for (const kod of potrzebneKody) await refreshItemCache(db, kod);
-}
-
-// --- kontrola: czy odtworzona historia daje stan zgodny z Odoo? -----------------
-// Liczymy bilans z ruchów i porównujemy ze stanem z kartoteki Odoo (po scaleniu).
+// --- wyrównanie: historia musi dawać ten sam stan, co kartoteka Odoo ------------
+//
+// Odoo potrafi być wewnętrznie niespójne: `qty_available` mówi 5, a suma jego
+// własnych ruchów 4, bo ktoś poprawił stan z ręki, poza rejestrem. Przyjmujemy
+// `qty_available` za prawdę (to jest liczba, na której pracuje magazyn) i dokładamy
+// jeden ruch domykający różnicę.
+//
+// Partii cenowych NIE ruszamy — one przyszły właśnie z `qty_available`, więc już
+// pokazują 5. Dlatego to NIE jest korekta inwentarzowa z zaplecza (ta zsynchronizowałaby
+// partie do policzonego stanu i policzyłaby różnicę drugi raz).
 const stanZOdoo = new Map(produkty.map((p) => [p.itemCode, p.quantity]));
 const bilans = new Map();
 // Ruchy sprzed importu, które zostają w bazie (np. operacje robione już w
-// zapleczu), też wchodzą do bilansu — inaczej kontrola pokazywałaby fałszywe
-// rozjazdy. Wyłączamy stan otwarcia (zastąpiony historią) i ruchy z tego importu:
-// przy --zapisz siedzą już w bazie, a w `dokMoves` mamy je i tak.
+// zapleczu), też wchodzą do bilansu — inaczej wyrównanie dokładałoby sztuki,
+// które ktoś już rozliczył. Wyłączamy stan otwarcia (zastąpiony historią)
+// i ruchy z tego importu: te mamy w `dokMoves`.
 const zostajace = await moves.find({
   itemCode: { $in: [...potrzebneKody] },
   kind: { $ne: 'opening' },
@@ -344,16 +342,61 @@ for (const m of [...dokMoves, ...zostajace]) {
   if (!wIn && !wOut) continue;
   bilans.set(m.itemCode, (bilans.get(m.itemCode) || 0) + (wIn ? m.quantity : -m.quantity));
 }
+
+const doWyrownania = [];
 for (const [kod, stan] of stanZOdoo) {
   const z = bilans.get(kod) ?? 0;
-  if (z !== stan) raport.rozbieznosciStanu.push({ itemCode: kod, wOdoo: stan, zHistorii: z, roznica: stan - z });
+  if (z !== stan) doWyrownania.push({ itemCode: kod, wOdoo: stan, zHistorii: z, roznica: stan - z });
+}
+raport.rozbieznosciStanu = doWyrownania;
+
+if (doWyrownania.length) {
+  const opId = newId();
+  dokOps.push({
+    _id: opId,
+    reference: 'odoo/ADJ-WYR/00001',
+    type: 'adjustment',
+    state: 'done',
+    fromLocationId: idLok('VIRT/Inventory'),
+    toLocationId: idLok('WH/Stock'),
+    contact: '', supplierId: null, supplierName: '', destinationId: null, destinationName: '',
+    scheduledAt: teraz,
+    sourceDocument: 'Odoo qty_available',
+    note: 'Wyrównanie rejestru do stanu z kartotek Odoo — różnica powstała z ręcznej edycji stanu poza rejestrem ruchów.',
+    lines: doWyrownania.map((r) => ({
+      itemCode: r.itemCode, locationId: idLok('WH/Stock'), quantity: Math.abs(r.roznica), countedQty: r.wOdoo
+    })),
+    createdByEmail: AKTOR, doneAt: teraz, doneByEmail: AKTOR,
+    createdAt: teraz, updatedAt: teraz,
+    importedFrom: ZNACZNIK
+  });
+  for (const r of doWyrownania) {
+    dokMoves.push(nowyRuch({
+      itemCode: r.itemCode,
+      from: r.roznica > 0 ? idLok('VIRT/Inventory') : idLok('WH/Stock'),
+      to: r.roznica > 0 ? idLok('WH/Stock') : idLok('VIRT/Inventory'),
+      qty: Math.abs(r.roznica), kind: 'adjustment', operationId: String(opId),
+      when: teraz, note: 'Wyrównanie do stanu Odoo'
+    }));
+  }
+}
+
+raport.operacje = dokOps.reduce((a, o) => ({ ...a, [o.type]: (a[o.type] || 0) + 1 }), {});
+raport.ruchow = dokMoves.length;
+
+if (ZAPISZ) {
+  if (dokOps.length) await ops.insertMany(dokOps);
+  if (dokMoves.length) await moves.insertMany(dokMoves);
+  await recomputeQuants(db);
+  for (const kod of potrzebneKody) await refreshItemCache(db, kod);
 }
 
 console.log(JSON.stringify(raport, null, 2));
 if (!ZAPISZ) console.error('\nPRÓBA NA SUCHO — nic nie zapisano. Dodaj --zapisz, żeby wykonać.');
 if (raport.rozbieznosciStanu.length) {
-  console.error(`\nUWAGA: ${raport.rozbieznosciStanu.length} kartotek ma stan z historii inny niż w Odoo`);
-  console.error('(zwykle ręczna edycja w Odoo poza rejestrem ruchów). Szczegóły w „rozbieznosciStanu”.');
+  console.error(`\nUWAGA: ${raport.rozbieznosciStanu.length} kartotek miało stan z historii inny niż w Odoo —`);
+  console.error('domknięte dokumentem odoo/ADJ-WYR/00001. To ślad po ręcznej edycji stanu w Odoo');
+  console.error('poza rejestrem ruchów; warto sprawdzić, która liczba jest prawdziwa. Szczegóły w „rozbieznosciStanu”.');
 }
 
 await closeDb();

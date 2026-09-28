@@ -124,6 +124,14 @@ Bez klucza oba importy przyjmują ścieżki do ręcznych eksportów `.xlsx` z Od
 
 **Historia przetworzeń.** Odoo nie ma dokumentu „przetworzenie" — magazyn robi to dwiema korektami stanu (minus na kartotece towaru, plus na kartotece gadżetu chwilę później). `odoo-historia.mjs` paruje je w operacje typu `conversion`, widoczne w Magazyn → Raportowanie → **Przetworzenia**. Dokumenty z importu są oznaczone `importedFrom: 'odoo'` i nie da się ich cofnąć — to zapis zdarzeń, nie operacja do odwracania.
 
+## Dostęp do Magazynu
+
+Moduł chodzi po **imiennej liście**, nie po roli: rola mówi, co wolno w środku (podgląd vs. operacje), a flaga `users.warehouseAccess` — kto w ogóle wchodzi. Zaznacza się ją w panelu Użytkownicy, w kolumnie „Magazyn".
+
+Domyślnie dostępu **nie ma** — pole nieustawione znaczy „nie". Administrator wchodzi zawsze i nie da mu się flagi odebrać, żeby nie dało się zamknąć modułu dla całej firmy.
+
+Bramka (`requireWarehouseAccess`) jest wpięta na prefiks tras — `/warehouse`, `/tw` i `/packing-products` — więc obejmuje też każdy przyszły endpoint modułu bez pamiętania o dopisaniu middleware. Wyjazdy idą pod tę samą bramkę, bo pakowanie realnie zdejmuje sztuki ze stanu.
+
 ## Testy i CI
 
 Testy używają `node:test`. `test:unit` nie wymaga bazy; `test`/`test:int` wymagają dostępnego MongoDB oraz dummy zmiennych `GOOGLE_*`. **Nie ustawiaj `MONGO_DB_NAME`** przy testach — używana jest izolowana baza testowa. CI (unit + integracyjne) działa w GitHub Actions.
