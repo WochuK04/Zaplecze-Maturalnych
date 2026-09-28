@@ -1950,7 +1950,7 @@
 
   function renderOpReadonly(box, op) {
     const lines = (op.lines || []).map((l) =>
-      `<div class="team-eq"><div class="item"><span class="n">${esc(l.itemName || l.itemCode)}${l.targetName ? ' → ' + esc(l.targetName) : ''}</span><span class="l">${fmtQty(l.quantity != null ? l.quantity : l.countedQty, unitOf(l.itemCode))}${l.unitPrice != null ? ' · ' + fmtMoney(l.unitPrice) : ''}</span></div></div>`).join('')
+      `<div class="team-eq"><div class="item"><span class="n"><span class="code">${esc(l.itemCode)}</span>${esc(l.itemName || l.itemCode)}${l.targetItemCode ? ` → <span class="code">${esc(l.targetItemCode)}</span>${esc(l.targetName || l.targetItemCode)}` : ''}</span><span class="l">${fmtQty(l.quantity != null ? l.quantity : l.countedQty, l.unit || unitOf(l.itemCode))}${l.unitPrice != null ? ' · ' + fmtMoney(l.unitPrice) : ''}</span></div></div>`).join('')
       || '<p class="sub">Brak pozycji.</p>';
     const canReverse = op.state === 'done';
     box.innerHTML = `
@@ -2110,7 +2110,9 @@
     // „dostępne: N" (wolny stan na WH/Stock) pokazujemy TYLKO przy źródle konwersji —
     // jak w v1. W innych operacjach liczba ta myli (przyjęcie/cel konwersji nic nie
     // zdejmują, a wydanie/odpad mogą iść z innej lokalizacji niż WH/Stock).
-    const itemOpts = (sel, showStock, allowNew) => '<option value="">— wybierz produkt —</option>' + optList(items, (i) => i.itemCode, (i) => showStock ? `${i.name} (dostępne: ${i.available})` : i.name, sel) + (allowNew ? '<option value="__new__">＋ Nowy produkt…</option>' : '');
+    // Kod przed nazwą: produkty o identycznej nazwie to osobne kartoteki (trzy
+    // „Długopis E8" z różnych partii), więc bez kodu nie da się wybrać właściwej.
+    const itemOpts = (sel, showStock, allowNew) => '<option value="">— wybierz produkt —</option>' + optList(items, (i) => i.itemCode, (i) => showStock ? `${i.itemCode} · ${i.name} (dostępne: ${i.available})` : `${i.itemCode} · ${i.name}`, sel) + (allowNew ? '<option value="__new__">＋ Nowy produkt…</option>' : '');
     wrap.innerHTML = opEdit.lines.map((l, i) => {
       let extra = '';
       if (t === 'receipt') extra = `<input data-line-field="unitPrice" data-idx="${i}" type="number" min="0" step="0.01" value="${l.unitPrice != null ? l.unitPrice : ''}" placeholder="cena" style="width:80px;">`;
