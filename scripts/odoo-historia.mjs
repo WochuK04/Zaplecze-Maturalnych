@@ -29,6 +29,7 @@ import { collections, ensureIndexes } from '../src/schema.js';
 import { seedStandardLocations, recomputeQuants, refreshItemCache } from '../src/stock.js';
 import { mergeProducts, normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, KOD_KOLIZJI } from '../src/odoo.js';
 import { isWarehouseCategory } from '../src/lib/categories.js';
+import { DEFAULT_UNIT } from '../src/lib/units.js';
 import { wczytaj } from './odoo/zrodlo.mjs';
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.env') });
@@ -154,9 +155,11 @@ const brakujace = [...potrzebneKody].filter((k) => !znane.has(k) && !obceKody.ha
 // Nazwę bierzemy z pierwszej linii ruchu, kategorię z prefiksu kodu. Takie kartoteki
 // wchodzą jako nieaktywne — to archiwum Odoo, nie żywy asortyment.
 const nazwaDlaKodu = new Map();
+const jednostkaDlaKodu = new Map();
 for (const l of zKodem) {
   const k = kanon(l.kod);
   if (k && !nazwaDlaKodu.has(k)) nazwaDlaKodu.set(k, l.nazwa);
+  if (k && l.jednostka && !jednostkaDlaKodu.has(k)) jednostkaDlaKodu.set(k, l.jednostka);
 }
 raport.kolizjeZeSprzetem = kolizje.map((k) => ({ odooCode: k.odooCode, itemCode: k.itemCode, nazwa: k.name }));
 raport.brakujaceKartoteki = brakujace.map((k) => ({ itemCode: k, nazwa: nazwaDlaKodu.get(k) || k }));
@@ -166,6 +169,7 @@ if (ZAPISZ && brakujace.length) {
     itemCode: k,
     category: KATEGORIA_Z_PREFIKSU[k[0]] || 'Towar',
     name: nazwaDlaKodu.get(k) || k,
+    unit: jednostkaDlaKodu.get(k) || DEFAULT_UNIT,
     details: '',
     quantity: 0,
     currentLocation: 'Magazyn',

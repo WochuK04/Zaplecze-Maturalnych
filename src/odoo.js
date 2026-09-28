@@ -13,6 +13,33 @@
 //                     duplikat, tylko ślad po zmianie towaru w gadżet. Zostawiamy
 //                     osobno — inaczej znika historia i raport „prezent ≤20 zł".
 
+import { DEFAULT_UNIT } from './lib/units.js';
+
+// Jednostka z Odoo → jednostka zaplecza (src/lib/units.js). Odoo pisze „Units",
+// „kg", „Litry"; nieznane lądują na „szt.", bo tak zachowuje się normalizeUnit.
+const JEDNOSTKI = [
+  [/^(units?|szt|sztuk)/i, 'szt.'],
+  [/^(kg|kilogram)/i, 'kg'],
+  [/^(l|litr)/i, 'l'],
+  [/^(m|metr)/i, 'm'],
+  [/^(opak|pack)/i, 'opak.']
+];
+
+export function mapUnit(jednostka) {
+  const s = String(jednostka ?? '').trim();
+  for (const [re, u] of JEDNOSTKI) if (re.test(s)) return u;
+  return DEFAULT_UNIT;
+}
+
+// Ilość magazynowa z Odoo. NIE zaokrąglamy do sztuk: krówki i wypełniacz idą
+// na kilogramy i mają stany ułamkowe (0,5 kg). Zaokrąglenie gubiło towar —
+// bilans T016 wychodził 4 zamiast 5 kg i wyglądało to na ręczną edycję w Odoo.
+export function normalizeStock(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.round(n * 1000) / 1000;
+}
+
 // „[G039] Arkusz polski e8" → { kod: 'G039', nazwa: 'Arkusz polski e8' }.
 // Odoo w eksporcie ruchów podaje produkt w tym formacie; bywa też sama nazwa.
 export function parseProductRef(raw) {
@@ -38,10 +65,13 @@ export function productCore(s) {
     .trim();
 }
 
-// Klucz scalania: nazwa + kategoria. Kategoria w kluczu jest celowo — to ona trzyma
-// towar i gadżet osobno.
-export function mergeKey(nazwa, kategoria) {
-  return `${normalizeName(nazwa)}|${normalizeName(kategoria)}`;
+// Klucz scalania: nazwa + kategoria + JEDNOSTKA. Kategoria trzyma osobno towar
+// i gadżet. Jednostka jest równie istotna: „Wypełniacz do paczek niebieski" ma
+// w Odoo kartotekę na sztuki (O010, 1 szt.) i na kilogramy (O011, 10 kg). Zlanie
+// ich dałoby „11 szt." — liczbę bez znaczenia. Przeliczenie kg→opakowania wymaga
+// wiedzy, ile waży paczka, więc zostawiamy je osobno i raportujemy.
+export function mergeKey(nazwa, kategoria, jednostka = DEFAULT_UNIT) {
+  return `${normalizeName(nazwa)}|${normalizeName(kategoria)}|${jednostka}`;
 }
 
 // Porządek kodów kartotek: najpierw litera, potem numer („G9" przed „G46").
@@ -80,9 +110,10 @@ export function mergeProducts(kartoteki, { teraz = new Date() } = {}) {
     const nazwa = String(k.nazwa ?? '').trim();
     const kategoria = String(k.kategoria ?? '').trim();
     if (!kod || !nazwa || !kategoria) continue;
-    const key = mergeKey(nazwa, kategoria);
+    const jednostka = mapUnit(k.jednostka);
+    const key = mergeKey(nazwa, kategoria, jednostka);
     if (!grupy.has(key)) grupy.set(key, []);
-    grupy.get(key).push({ ...k, kod, nazwa, kategoria, stan: Math.max(0, Math.floor(Number(k.stan) || 0)) });
+    grupy.get(key).push({ ...k, kod, nazwa, kategoria, jednostka, stan: normalizeStock(k.stan) });
   }
 
   const produkty = [];
@@ -108,7 +139,8 @@ export function mergeProducts(kartoteki, { teraz = new Date() } = {}) {
       itemCode: wiodaca.kod,
       name: wiodaca.nazwa,
       category: wiodaca.kategoria,
-      quantity: priceBatches.reduce((s, b) => s + b.qty, 0),
+      unit: wiodaca.jednostka,
+      quantity: normalizeStock(priceBatches.reduce((s, b) => s + b.qty, 0)),
       priceBatches,
       mergedCodes: pozostale.map((c) => c.kod),
       zrodla: czlonkowie.slice().sort((a, b) => compareCodes(a.kod, b.kod))
@@ -243,7 +275,8 @@ export function normalizeMoveLine(row) {
     kod,
     nazwa,
     when: row.data instanceof Date ? row.data : new Date(row.data),
-    qty: Math.max(0, Math.round(Number(row.ilosc) || 0)),
+    qty: normalizeStock(row.ilosc),
+    jednostka: mapUnit(row.jednostka),
     odNazwa: String(row.od ?? ''),
     doNazwa: String(row.do ?? ''),
     fromKod,

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseProductRef, productCore, compareCodes, pickCanonical,
   mergeProducts, findConversionCandidates, mapLocation, classifyMove,
-  normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions
+  normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, mapUnit, normalizeStock
 } from '../src/odoo.js';
 
 const d = (s) => new Date(s);
@@ -253,4 +253,57 @@ test('resolveCodeCollisions porównuje kody bez względu na wielkość liter', (
   ]);
   const { kolizje } = resolveCodeCollisions(produkty, new Set(['t003']));
   assert.equal(kolizje.length, 1);
+});
+
+test('mapUnit tłumaczy jednostki Odoo, nieznane spadają na sztuki', () => {
+  assert.equal(mapUnit('Units'), 'szt.');
+  assert.equal(mapUnit('kg'), 'kg');
+  assert.equal(mapUnit('Litry'), 'l');
+  assert.equal(mapUnit(''), 'szt.');
+  assert.equal(mapUnit('cośdziwnego'), 'szt.');
+});
+
+test('normalizeStock zachowuje ułamki — kilogramów nie wolno zaokrąglać', () => {
+  // Realny przypadek: bilans T016 to 25 − 15 − 0,5 − 4,5 = 5 kg. Zaokrąglanie
+  // do sztuk dawało 4 i wyglądało to na ręczną edycję stanu w Odoo.
+  assert.equal(normalizeStock(0.5), 0.5);
+  assert.equal(normalizeStock(4.5), 4.5);
+  assert.equal(normalizeStock('3.14159'), 3.142);
+  assert.equal(normalizeStock(-2), 0);
+  assert.equal(normalizeStock('nie liczba'), 0);
+});
+
+test('mergeProducts NIE scala kartotek o różnych jednostkach', () => {
+  // „Wypełniacz do paczek niebieski" ma w Odoo kartotekę na sztuki i na kilogramy.
+  // Zlanie ich dałoby „11 szt." — liczbę bez znaczenia.
+  const out = mergeProducts([
+    { kod: 'O010', nazwa: 'Wypełniacz do paczek niebieski', kategoria: 'opakowanie', stan: 1, koszt: 165.6, jednostka: 'Units' },
+    { kod: 'O011', nazwa: 'Wypełniacz do paczek niebieski', kategoria: 'opakowanie', stan: 10, koszt: 14.51, jednostka: 'kg' }
+  ]);
+  assert.equal(out.length, 2);
+  assert.deepEqual(
+    out.map((p) => [p.itemCode, p.quantity, p.unit]).sort(),
+    [['O010', 1, 'szt.'], ['O011', 10, 'kg']]
+  );
+});
+
+test('mergeProducts scala kartoteki tej samej jednostki i nie gubi ułamków', () => {
+  const out = mergeProducts([
+    { kod: 'T016', nazwa: 'Krówki E8', kategoria: 'Towar', stan: 5.5, koszt: 35.7, jednostka: 'kg' },
+    { kod: 'T018', nazwa: 'Krówki E8', kategoria: 'Towar', stan: 0.5, koszt: 35.7, jednostka: 'kg' }
+  ]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].unit, 'kg');
+  assert.equal(out[0].quantity, 6);
+  assert.deepEqual(out[0].priceBatches.map((b) => b.qty), [5.5, 0.5]);
+});
+
+test('normalizeMoveLine przenosi jednostkę i ułamkową ilość', () => {
+  const l = normalizeMoveLine({
+    produkt: '[T016] Krówki E8', data: d('2026-08-24T10:00:00Z'), ilosc: 0.5,
+    od: 'mag/Strefa składowania', do: 'Customers', odnosnik: 'mag/OUT/00010', status: 'Wykonano'
+  });
+  assert.equal(l.qty, 0.5);
+  assert.equal(l.jednostka, 'szt.');
+  assert.equal(normalizeMoveLine({ produkt: '[T016] x', data: d('2026-08-24T10:00:00Z'), ilosc: 4.5, od: 'a', do: 'b', jednostka: 'kg' }).jednostka, 'kg');
 });
