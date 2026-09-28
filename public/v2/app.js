@@ -822,6 +822,21 @@
         toast('Utworzono lokalizację: ' + res.name);
       }
     },
+    quickSupplier: {
+      eyebrow: 'Magazyn · Operacja', title: 'Nowy dostawca',
+      hint: 'Od kogo przyjmujemy towar. Trafi też do Konfiguracji.', cta: 'Utwórz',
+      fields: () => `
+        <label class="field"><span>Nazwa *</span><input name="name" placeholder="np. Rafael Sp. z o.o."></label>
+        <label class="field"><span>Kontakt</span><input name="contact" placeholder="e-mail / telefon"></label>`,
+      submit: async (data, ctx) => {
+        if (!data.name) throw new Error('Podaj nazwę dostawcy.');
+        const res = await api('/warehouse/suppliers', { method: 'POST', body: JSON.stringify({ name: data.name, contact: data.contact || '' }) });
+        state.mag.formData = state.mag.formData || {};
+        (state.mag.formData.suppliers = state.mag.formData.suppliers || []).push({ id: res.id, name: res.name });
+        applyQuickHeaderPick(ctx.field, res.id, res.name);
+        toast('Utworzono dostawcę: ' + res.name);
+      }
+    },
     quickDestination: {
       eyebrow: 'Magazyn · Operacja', title: 'Nowe miejsce dostawy',
       hint: 'Dokąd towar jedzie (szkoła, event, odbiorca). Trafi też do Konfiguracji.', cta: 'Utwórz',
@@ -1950,7 +1965,7 @@
     // W selectach nagłówka doklejamy „＋ Nowa…" — jak „＋ Nowy produkt…" przy konwersji.
     // Planista nie musi wychodzić do Konfiguracji, żeby dopisać brakującą lokalizację.
     const locOpts = (sel) => optList(form.locations, (l) => l.id, (l) => l.name, sel) + '<option value="__new__">＋ Nowa lokalizacja…</option>';
-    const supOpts = (sel) => '<option value="">— brak —</option>' + optList(form.suppliers, (s) => s.id, (s) => s.name, sel);
+    const supOpts = (sel) => '<option value="">— brak —</option>' + optList(form.suppliers, (s) => s.id, (s) => s.name, sel) + '<option value="__new__">＋ Nowy dostawca…</option>';
     const dstOpts = (sel) => '<option value="">— brak —</option>' + optList(form.deliveryDestinations, (d) => d.id, (d) => d.name, sel) + '<option value="__new__">＋ Nowe miejsce dostawy…</option>';
     const partyField = t === 'receipt'
       ? `<label class="field"><span>Dostawca</span><select data-op-h="supplierId">${supOpts(op.supplierId)}</select></label>`
@@ -2052,7 +2067,8 @@
   // „＋ Nowa…" w selectach nagłówka. Po wyborze przywracamy poprzednią wartość i
   // otwieramy sheet — dzięki temu anulowanie nie zostawia selecta na „__new__".
   function bindQuickHeaderPickers() {
-    [['fromLocationId', 'quickLocation'], ['toLocationId', 'quickLocation'], ['destinationId', 'quickDestination']]
+    [['fromLocationId', 'quickLocation'], ['toLocationId', 'quickLocation'],
+     ['destinationId', 'quickDestination'], ['supplierId', 'quickSupplier']]
       .forEach(([field, sheet]) => {
         const sel = $(`[data-op-h="${field}"]`);
         if (!sel) return;
@@ -2293,16 +2309,24 @@
     const val = prodEdit.batches.reduce((a, b) => a + (Number(b.qty) || 0) * (Number(b.unitPrice) || 0), 0);
     const t = $('[data-batch-total]'); if (t) t.textContent = `Łącznie: ${fmtQty(total, prodEdit.unit || 'szt.')} · wartość ${fmtMoney(val)}`;
   }
+  // Wiersz historii prowadzi do dokumentu, z którego ruch powstał — inaczej widać
+  // „wydanie 120 szt.", ale nie wiadomo, którym dokumentem i do kogo. Ruchy bez
+  // operacji (stan otwarcia, stare migracje) zostają nieklikalne.
   function loadProdHistory(code) {
     const box = $('[data-prod-history]'); if (!box) return;
     api('/warehouse/moves?itemCode=' + encodeURIComponent(code) + '&limit=200').then((moves) => {
       if (!moves.length) { box.innerHTML = '<div class="eq-sub">Brak ruchów.</div>'; return; }
       box.innerHTML = tableHTML(
-        [{ t: 'Data' }, { t: 'Z' }, { t: 'Do' }, { t: 'Ilość', num: true }, { t: 'Rodzaj' }],
-        moves.map((m) => ({ cells: [
-          { v: fmtDate(m.doneAt), cls: 'mut' }, { v: m.fromName || '—', cls: 'mut' }, { v: m.toName || '—', cls: 'mut' },
-          { v: fmtInt(m.quantity), cls: 'num' }, { v: MOVE_KIND[m.kind] || m.kind || '—', cls: 'mut' }
-        ] }))
+        [{ t: 'Data' }, { t: 'Dokument' }, { t: 'Z' }, { t: 'Do' }, { t: 'Ilość', num: true }, { t: 'Rodzaj' }],
+        moves.map((m) => ({
+          click: m.operationId || null,
+          cells: [
+            { v: fmtDate(m.doneAt), cls: 'mut' },
+            { v: m.operationReference || '—', cls: m.operationReference ? 'mono-cell' : 'mut' },
+            { v: m.fromName || '—', cls: 'mut' }, { v: m.toName || '—', cls: 'mut' },
+            { v: fmtQty(m.quantity, m.unit), cls: 'num' }, { v: MOVE_KIND[m.kind] || m.kind || '—', cls: 'mut' }
+          ]
+        }))
       );
     }).catch(() => { box.innerHTML = '<div class="eq-sub">Nie udało się wczytać historii.</div>'; });
   }
@@ -2346,11 +2370,16 @@
       } else if (id === 'moves') {
         const rows = await api('/warehouse/moves?limit=200');
         body.innerHTML = rows.length ? tableHTML(
-          [{ t: 'Kiedy' }, { t: 'Kod' }, { t: 'Ruch' }, { t: 'Ilość', num: true }, { t: 'Lokalizacja' }],
-          rows.map((m) => ({ cells: [
-            { v: fmtDay(m.doneAt), cls: 'mut' }, { v: m.itemCode, cls: 'mono-cell' }, { v: MOVE_KIND[m.kind] || m.kind },
-            { v: fmtInt(m.quantity), cls: 'num' }, { v: m.toName || m.fromName || '—', cls: 'mut' }
-          ] }))
+          [{ t: 'Kiedy' }, { t: 'Dokument' }, { t: 'Kod' }, { t: 'Ruch' }, { t: 'Ilość', num: true }, { t: 'Lokalizacja' }],
+          rows.map((m) => ({
+            click: m.operationId || null,
+            cells: [
+              { v: fmtDay(m.doneAt), cls: 'mut' },
+              { v: m.operationReference || '—', cls: m.operationReference ? 'mono-cell' : 'mut' },
+              { v: m.itemCode, cls: 'mono-cell' }, { v: MOVE_KIND[m.kind] || m.kind },
+              { v: fmtQty(m.quantity, m.unit), cls: 'num' }, { v: m.toName || m.fromName || '—', cls: 'mut' }
+            ]
+          }))
         ) : emptyBlock('Brak ruchów', '');
       } else if (id === 'conversions') {
         await renderConversionsReport();
