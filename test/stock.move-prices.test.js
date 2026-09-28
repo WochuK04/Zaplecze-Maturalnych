@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { movePriceBatches } from '../src/stock-history.js';
+import { movePriceBatches, itemUnitCost } from '../src/stock-history.js';
 
 // Wycena pojedynczego ruchu w raporcie „Ruchy w okresie". Zgłoszenie z Magazynu
 // brzmiało „eksport ruchów w okresie nie pobiera cen i wartości" — okazało się, że
@@ -51,25 +51,59 @@ test('konwersja: źródło po partiach zdjętych, cel po koszcie przeniesionym',
   assert.deepEqual(movePriceBatches(op, ruch('G060', 20)).batches, [{ qty: 20, unitPrice: 8.5 }]);
 });
 
-// Sedno zgłoszenia: odróżnić „nie znamy ceny, bo dokument przyszedł z Odoo" od
-// „coś się zepsuło". Pierwsze jest stanem faktycznym i UI ma to powiedzieć wprost.
-test('dokument z importu Odoo zgłasza brak ceny jako brak danych źródła', () => {
-  const op = { type: 'receipt', importedFrom: 'odoo', lines: [{ itemCode: 'T038', quantity: 10 }] };
-  const { batches, unpriced } = movePriceBatches(op, ruch('T038', 10));
-  assert.equal(batches, null);
-  assert.equal(unpriced, 'import');
+test('cena z dokumentu jest oznaczona jako pochodząca z dokumentu', () => {
+  const op = { type: 'receipt', lines: [{ itemCode: 'G039', unitPrice: 6.95 }] };
+  assert.equal(movePriceBatches(op, ruch('G039', 100)).source, 'dokument');
 });
 
-test('konwersja z importu też jest oznaczona jako import, nie jako pustka', () => {
+// Sedno zgłoszenia: dokument odtworzony z Odoo własnej ceny nie ma, ale koszt kartoteki
+// przyszedł tym samym importem — i to on stoi pod „Wyceną stanu". Skoro używamy go tam,
+// raport ruchów też ma prawo go użyć; musi tylko powiedzieć, że to wycena wtórna.
+test('dokument z importu wycenia się kosztem kartoteki', () => {
+  const op = { type: 'receipt', importedFrom: 'odoo', lines: [{ itemCode: 'T038', quantity: 10 }] };
+  const { batches, source, unpriced } = movePriceBatches(op, ruch('T038', 10), { unitCost: 3.4 });
+  assert.deepEqual(batches, [{ qty: 10, unitPrice: 3.4 }]);
+  assert.equal(source, 'kartoteka');
+  assert.equal(unpriced, null);
+});
+
+test('cena z dokumentu ma pierwszeństwo przed kosztem kartoteki', () => {
+  const op = { type: 'receipt', lines: [{ itemCode: 'G039', unitPrice: 6.95 }] };
+  const { batches, source } = movePriceBatches(op, ruch('G039', 100), { unitCost: 99 });
+  assert.deepEqual(batches, [{ qty: 100, unitPrice: 6.95 }]);
+  assert.equal(source, 'dokument');
+});
+
+test('konwersja z importu również dostaje wycenę z kartoteki', () => {
   const op = { type: 'conversion', importedFrom: 'odoo', lines: [{ itemCode: 'T020', targetItemCode: 'G063', quantity: 82 }] };
-  assert.equal(movePriceBatches(op, ruch('G063', 82)).unpriced, 'import');
+  assert.equal(movePriceBatches(op, ruch('G063', 82), { unitCost: 1.2 }).source, 'kartoteka');
+});
+
+// Bez kosztu kartoteki nie ma czym wycenić i wtedy dopiero zostaje pustka.
+test('bez kosztu kartoteki import zgłasza brak danych źródła', () => {
+  const op = { type: 'receipt', importedFrom: 'odoo', lines: [{ itemCode: 'T038', quantity: 10 }] };
+  assert.deepEqual(movePriceBatches(op, ruch('T038', 10)), { batches: null, source: null, unpriced: 'import' });
 });
 
 test('ruch bez dokumentu to brak danych, nie import', () => {
-  assert.deepEqual(movePriceBatches(null, ruch('G001', 3)), { batches: null, unpriced: 'brak-danych' });
+  assert.deepEqual(movePriceBatches(null, ruch('G001', 3)), { batches: null, source: null, unpriced: 'brak-danych' });
 });
 
 test('dokument zaplecza bez detalu nie udaje importu', () => {
   const op = { type: 'delivery', deliveryDetail: [] };
   assert.equal(movePriceBatches(op, ruch('G001', 3)).unpriced, 'brak-danych');
+});
+
+// Koszt kartoteki liczymy tak samo jak „Wycena stanu": średnia ważona partii.
+test('koszt kartoteki to średnia ważona partii na stanie', () => {
+  assert.equal(itemUnitCost({ priceBatches: [{ qty: 40, unitPrice: 5 }, { qty: 60, unitPrice: 10 }] }), 8);
+});
+
+test('partie zużyte do zera dają średnią z samych cen', () => {
+  assert.equal(itemUnitCost({ priceBatches: [{ qty: 0, unitPrice: 5 }, { qty: 0, unitPrice: 10 }] }), 7.5);
+});
+
+test('kartoteka bez partii nie ma kosztu', () => {
+  assert.equal(itemUnitCost({ priceBatches: [] }), null);
+  assert.equal(itemUnitCost(null), null);
 });

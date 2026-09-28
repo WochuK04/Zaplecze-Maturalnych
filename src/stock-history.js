@@ -111,23 +111,53 @@ export function pricesFromOperation(op, move) {
 }
 
 /**
+ * Koszt jednostkowy kartoteki — średnia ważona jej partii cenowych.
+ *
+ * Ta sama liczba, na której stoi „Wycena stanu" (`computeValuation.avgUnitPrice`):
+ * partie przyszły z importu produktów z Odoo, razem z kosztem. Liczymy z partii
+ * leżących na stanie, bo to one opisują bieżącą wycenę; gdy wszystkie są zużyte do
+ * zera, zostaje średnia z samych cen — ilością nie ma czego ważyć.
+ *
+ * @returns {number|null} null, gdy kartoteka nie ma ani jednej partii z ceną
+ */
+export function itemUnitCost(item) {
+  const batches = Array.isArray(item?.priceBatches) ? item.priceBatches : [];
+  const naStanie = batches.filter(b => (Number(b.qty) || 0) > 0);
+  const zrodlo = naStanie.length ? naStanie : batches;
+
+  const qty = zrodlo.reduce((s, b) => s + (Number(b.qty) || 0), 0);
+  if (qty > 0) {
+    const value = zrodlo.reduce((s, b) => s + (Number(b.qty) || 0) * (Number(b.unitPrice) || 0), 0);
+    return round2(value / qty);
+  }
+  const ceny = zrodlo.map(b => Number(b.unitPrice) || 0).filter(p => p > 0);
+  return ceny.length ? round2(ceny.reduce((a, b) => a + b, 0) / ceny.length) : null;
+}
+
+/**
  * Partie cenowe pojedynczego ruchu — do raportów, które pokazują cenę obok ilości.
  *
  * Ruch zwiększający stan wycenia się warstwami, które wniósł (`added`); zmniejszający
- * — warstwami, które zdjął FIFO (`consumed`). Obie odpowiedzi mogą nie istnieć i to
- * NIE jest to samo co zero: dokumenty odtworzone z Odoo (`importedFrom`) nie niosą
- * kosztów, bo Odoo nie podaje ich w eksporcie ruchów. Raport musi umieć powiedzieć
- * „nie wiem, bo import", zamiast pokazywać gołą kreskę, którą czyta się jak błąd —
- * dokładnie to zgłoszenie przyszło z Magazynu („eksport nie pobiera cen i wartości").
+ * — warstwami, które zdjął FIFO (`consumed`). Dokumenty odtworzone z Odoo własnych cen
+ * nie mają: eksport ruchów z Odoo nie niesie kosztu. NIE znaczy to jednak, że ceny nie
+ * znamy — koszt kartoteki przyszedł tym samym importem i to on stoi pod „Wyceną stanu".
+ * Wycena ruchu tym kosztem (`unitCost`) jest przybliżeniem — bierze koszt dzisiejszy,
+ * nie ten z dnia ruchu — więc raport ma obowiązek podać `source`, żeby dało się odróżnić
+ * cenę z dokumentu od wyceny wtórnej. Pusto zostaje tylko tam, gdzie naprawdę nie ma nic.
  *
- * @returns {{ batches: object[]|null, unpriced: null|'import'|'brak-danych' }}
+ * @returns {{ batches: object[]|null, source: 'dokument'|'kartoteka'|null,
+ *             unpriced: null|'import'|'brak-danych' }}
  */
-export function movePriceBatches(op, move) {
-  if (!op) return { batches: null, unpriced: 'brak-danych' };
-  const { added, consumed } = pricesFromOperation(op, move);
+export function movePriceBatches(op, move, { unitCost = null } = {}) {
+  const { added, consumed } = op ? pricesFromOperation(op, move) : { added: null, consumed: null };
   const batches = consumed?.length ? consumed : (added?.length ? added : null);
-  if (batches) return { batches, unpriced: null };
-  return { batches: null, unpriced: op.importedFrom ? 'import' : 'brak-danych' };
+  if (batches) return { batches, source: 'dokument', unpriced: null };
+
+  const koszt = Number(unitCost);
+  if (unitCost != null && Number.isFinite(koszt)) {
+    return { batches: [{ qty: move.quantity, unitPrice: round2(koszt) }], source: 'kartoteka', unpriced: null };
+  }
+  return { batches: null, source: null, unpriced: op?.importedFrom ? 'import' : 'brak-danych' };
 }
 
 /**

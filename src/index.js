@@ -26,7 +26,7 @@ import { personAccessHoldings } from './lib/access-queries.js';
 import { seedAccessMapDefaults } from './lib/access-seed.js';
 import { extractPdfText, extractItemsFromText, extractWarehouseItemsFromText } from './invoice-extract.js';
 import { matchInvoiceLines, normalizeInvoiceName } from './lib/invoice-match.js';
-import { replayStockAt, endOfDay, movePriceBatches } from './stock-history.js';
+import { replayStockAt, endOfDay, movePriceBatches, itemUnitCost } from './stock-history.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -1107,10 +1107,13 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
   const itemCodes = [...new Set(moves.map(m => m.itemCode))];
   const items = itemCodes.length
     ? await db.collection(collections.items)
-        .find({ itemCode: { $in: itemCodes } }, { projection: { itemCode: 1, name: 1, category: 1 } })
+        // `priceBatches` są tu po to, by ruch z dokumentu bez cen (import z Odoo) dało
+        // się wycenić kosztem kartoteki — tym samym, na którym stoi „Wycena stanu".
+        .find({ itemCode: { $in: itemCodes } }, { projection: { itemCode: 1, name: 1, category: 1, priceBatches: 1 } })
         .toArray()
     : [];
   const itemByCode = new Map(items.map(it => [it.itemCode, it]));
+  const kosztKartoteki = new Map(items.map(it => [it.itemCode, itemUnitCost(it)]));
 
   // Tylko ruchy towarów magazynowych (jak w historii ruchów).
   let warehouseMoves = moves.filter(m => isWarehouseCategory(itemByCode.get(m.itemCode)?.category));
@@ -1151,7 +1154,8 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
     const item = itemByCode.get(m.itemCode);
 
     const op = m.operationId ? opById.get(String(m.operationId)) : null;
-    const { batches: priceBatches, unpriced } = movePriceBatches(op, m);
+    const { batches: priceBatches, source: priceSource, unpriced } =
+      movePriceBatches(op, m, { unitCost: kosztKartoteki.get(m.itemCode) ?? null });
 
     return {
       id: String(m._id),
@@ -1167,6 +1171,7 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
       note: m.note || '',
       doneAt: m.doneAt || m.createdAt || null,
       priceBatches,
+      priceSource,
       unpriced
     };
   });
@@ -1177,9 +1182,11 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
     ...summary,
     categories,
     rows,
-    // Ile ruchów nie da się wycenić, bo dokument przyszedł z importu historii Odoo.
-    // UI mówi to wprost — inaczej kolumna pełna kresek czyta się jak awaria raportu.
-    importedUnpriced: rows.filter(r => r.unpriced === 'import').length,
+    // Ile wierszy wyceniono wtórnie (koszt kartoteki zamiast ceny z dokumentu) i ile
+    // zostało bez ceny mimo wszystko. UI mówi to wprost: wycena wtórna jest przybliżeniem
+    // i księgowość musi wiedzieć, na którą liczbę patrzy.
+    estimatedRows: rows.filter(r => r.priceSource === 'kartoteka').length,
+    unpricedRows: rows.filter(r => r.unpriced).length,
     truncated: warehouseMoves.length > LIMIT
   });
 });
@@ -1821,9 +1828,13 @@ async function loadOperationDetail(db, id) {
   const locById = new Map(locations.map(l => [String(l._id), l]));
   const codes = [...new Set((op.lines || []).flatMap(l => [l.itemCode, l.targetItemCode]).filter(Boolean))];
   const items = codes.length
-    ? await db.collection(collections.items).find({ itemCode: { $in: codes } }, { projection: { itemCode: 1, name: 1, unit: 1 } }).toArray()
+    ? await db.collection(collections.items).find({ itemCode: { $in: codes } }, { projection: { itemCode: 1, name: 1, unit: 1, priceBatches: 1 } }).toArray()
     : [];
   const nameByCode = new Map(items.map(i => [i.itemCode, i.name]));
+  // Koszt kartoteki — wyłącznie do wydruku dokumentów, które własnych cen nie mają
+  // (przyjęcia odtworzone z historii Odoo). NIE wchodzi do `unitPrice`, bo tym polem
+  // edytor prefilluje formularz i zapis podstawiłby wycenę w miejsce ceny z faktury.
+  const kosztByCode = new Map(items.map(i => [i.itemCode, itemUnitCost(i)]));
   // Jednostkę niesie sam dokument, a nie cache produktów w przeglądarce: ten trzyma
   // tylko kartoteki aktywne, więc pozycje na kartotekach zarchiwizowanych (krówki
   // z 2025) traciły „kg" i wyświetlały się jako goła liczba.
@@ -1859,6 +1870,7 @@ async function loadOperationDetail(db, id) {
       targetName: l.targetItemCode ? (nameByCode.get(l.targetItemCode) || '') : null,
       quantity: l.quantity ?? null,
       unitPrice: l.unitPrice ?? null,
+      fallbackUnitPrice: l.unitPrice == null ? (kosztByCode.get(l.itemCode) ?? null) : null,
       countedQty: l.countedQty ?? null,
       locationId: l.locationId ? String(l.locationId) : null,
       locationName: l.locationId ? (locById.get(String(l.locationId))?.name || null) : null,
