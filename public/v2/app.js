@@ -2008,7 +2008,12 @@
       <div class="drawer-foot" style="flex-wrap:wrap;gap:8px;">
         <button class="btn btn-primary" style="flex:1;min-width:120px;" data-op-validate>Zatwierdź operację</button>
         <button class="btn btn-ghost" data-op-save>Zapisz</button>
-        <button class="btn btn-danger-ghost" data-op-cancel>Anuluj</button>
+        ${op.state === 'draft'
+          // Wersję roboczą się odrzuca, nie „anuluje": dokument otwarty na próbę nie ma
+          // prawa zostać na liście. Dokument w stanie „gotowe" był już komuś obiecany,
+          // więc tam zostaje anulowanie ze śladem.
+          ? '<button class="btn btn-danger-ghost" data-op-discard>Odrzuć</button>'
+          : '<button class="btn btn-danger-ghost" data-op-cancel>Anuluj dokument</button>'}
       </div>`;
     renderOpLines();
     renderPendingInvoiceLines();
@@ -2118,18 +2123,32 @@
     // „Długopis E8" z różnych partii), więc bez kodu nie da się wybrać właściwej.
     const itemOpts = (sel, showStock, allowNew) => '<option value="">— wybierz produkt —</option>' + optList(items, (i) => i.itemCode, (i) => showStock ? `${i.itemCode} · ${i.name} (dostępne: ${i.available})` : `${i.itemCode} · ${i.name}`, sel) + (allowNew ? '<option value="__new__">＋ Nowy produkt…</option>' : '');
     wrap.innerHTML = opEdit.lines.map((l, i) => {
-      let extra = '';
-      if (t === 'receipt') extra = `<input data-line-field="unitPrice" data-idx="${i}" type="number" min="0" step="0.01" value="${l.unitPrice != null ? l.unitPrice : ''}" placeholder="cena" style="width:80px;">`;
-      else if (t === 'conversion') extra = `<select data-line-field="targetItemCode" data-idx="${i}" style="flex:1;min-width:120px;">${itemOpts(l.targetItemCode, false, true)}</select>`;
+      // Cena przy przyjęciu; konwersja ma własny układ (patrz niżej).
+      const extra = t === 'receipt'
+        ? `<input data-line-field="unitPrice" data-idx="${i}" type="number" min="0" step="0.01" value="${l.unitPrice != null ? l.unitPrice : ''}" placeholder="cena" style="width:80px;">`
+        : '';
       // step="any" + jednostka obok pola: produkty na kg mają stany ułamkowe.
       const u = unitOf(l.itemCode);
       const uTag = u ? `<span class="op-line-unit">${esc(u)}</span>` : '';
       const qtyField = t === 'adjustment'
         ? `<input data-line-field="countedQty" data-idx="${i}" type="number" min="0" step="any" value="${l.countedQty != null ? l.countedQty : ''}" placeholder="policzono" style="width:90px;">${uTag}`
         : `<input data-line-field="quantity" data-idx="${i}" type="number" min="0" step="any" value="${l.quantity != null ? l.quantity : ''}" placeholder="ilość" style="width:80px;">${uTag}`;
+      // Konwersja ma dwa identyczne selecty obok siebie i po samych nazwach nie da się
+      // poznać, co w co się zamienia — zgłoszenie z Magazynu brzmiało wprost: „okienka
+      // powinny być jakoś podpisane". Podpisy tylko tutaj; pozostałe typy operacji mają
+      // jedno pole produktu i etykieta byłaby szumem.
+      if (t === 'conversion') {
+        return `<div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:8px;flex-wrap:wrap;">
+          <label class="field" style="flex:1;min-width:140px;margin:0;"><span>Z czego (towar)</span><select data-line-field="itemCode" data-idx="${i}">${itemOpts(l.itemCode, true, false)}</select></label>
+          <span aria-hidden="true" style="padding-bottom:10px;color:var(--muted);font-size:16px;">→</span>
+          <label class="field" style="flex:1;min-width:140px;margin:0;"><span>Na co (gadżet)</span><select data-line-field="targetItemCode" data-idx="${i}">${itemOpts(l.targetItemCode, false, true)}</select></label>
+          <label class="field" style="margin:0;"><span>Ilość</span><span style="display:flex;align-items:center;gap:6px;">${qtyField}</span></label>
+          <button class="x-btn" data-op-delline="${i}" style="width:32px;height:32px;flex-shrink:0;margin-bottom:1px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
+        </div>`;
+      }
       return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
-        <select data-line-field="itemCode" data-idx="${i}" style="flex:1;min-width:140px;">${itemOpts(l.itemCode, t === 'conversion', t === 'receipt')}</select>
-        ${t === 'conversion' ? extra : ''}${qtyField}${t === 'receipt' ? extra : ''}
+        <select data-line-field="itemCode" data-idx="${i}" style="flex:1;min-width:140px;">${itemOpts(l.itemCode, false, t === 'receipt')}</select>
+        ${qtyField}${extra}
         <button class="x-btn" data-op-delline="${i}" style="width:32px;height:32px;flex-shrink:0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </div>`;
     }).join('');
@@ -2185,6 +2204,13 @@
       toast(r.message || 'Wykonano operację.');
       closeDrawer(); afterOpChange();
     } catch (e) { toast(e.message || 'Nie udało się zatwierdzić.', true); if (btn) { btn.disabled = false; btn.textContent = 'Zatwierdź operację'; } }
+  }
+  // Odrzucenie wersji roboczej — dokument znika razem z numerem. Backend i tak
+  // przepuści to tylko dla `draft` bez ruchów w rejestrze.
+  async function discardOp() {
+    if (!confirm('Odrzucić tę wersję roboczą? Dokument zniknie z listy.')) return;
+    try { await api('/warehouse/operations/' + encodeURIComponent(opEdit.id), { method: 'DELETE' }); toast('Odrzucono.'); closeDrawer(); afterOpChange(); }
+    catch (e) { toast(e.message || 'Nie udało się.', true); }
   }
   async function cancelOp() {
     if (!confirm('Anulować tę operację?')) return;
@@ -2389,13 +2415,16 @@
       } else if (id === 'moves') {
         const rows = await api('/warehouse/moves?limit=200');
         body.innerHTML = rows.length ? tableHTML(
-          [{ t: 'Kiedy' }, { t: 'Dokument' }, { t: 'Kod' }, { t: 'Ruch' }, { t: 'Ilość', num: true }, { t: 'Lokalizacja' }],
+          // Nazwa obok kodu: sam `G001` nic nie mówi komuś, kto nie zna numeracji Odoo
+          // na pamięć — a to jest lista, po której szuka się konkretnego towaru.
+          [{ t: 'Kiedy' }, { t: 'Dokument' }, { t: 'Kod' }, { t: 'Nazwa' }, { t: 'Ruch' }, { t: 'Ilość', num: true }, { t: 'Lokalizacja' }],
           rows.map((m) => ({
             click: m.operationId || null,
             cells: [
               { v: fmtDay(m.doneAt), cls: 'mut' },
               { v: m.operationReference || '—', cls: m.operationReference ? 'mono-cell' : 'mut' },
-              { v: m.itemCode, cls: 'mono-cell' }, { v: MOVE_KIND[m.kind] || m.kind },
+              { v: m.itemCode, cls: 'mono-cell' }, { v: m.itemName || '—', cls: m.itemName ? '' : 'mut' },
+              { v: MOVE_KIND[m.kind] || m.kind },
               { v: fmtQty(m.quantity, m.unit), cls: 'num' }, { v: m.toName || m.fromName || '—', cls: 'mut' }
             ]
           }))
@@ -2418,12 +2447,22 @@
         const rep = await api('/warehouse/aging');
         const rows = rep.products || [];
         const bucket = (d) => d == null ? 'bez daty' : d <= 30 ? '0–30 dni' : d <= 90 ? '31–90 dni' : d <= 180 ? '91–180 dni' : '>180 dni';
-        body.innerHTML = rows.length ? tableHTML(
-          [{ t: 'Kod' }, { t: 'Nazwa' }, { t: 'Najstarsze (dni)', num: true }, { t: 'Przedział' }],
+        // Sam nagłówek „Najstarsze (dni)" nie mówił, czego dotyczy liczba — stąd pytanie
+        // z Magazynu „co to znaczy najstarsze dni?". Raport liczy wiek PARTII CENOWEJ,
+        // nie produktu, więc trzeba to napisać wprost i pokazać obok ilość, bo bez niej
+        // nie wiadomo, czy 304 dni dotyczą dwóch sztuk czy całego regału.
+        const note = '<p style="margin:0 0 16px;font-size:13.5px;color:var(--muted);">Ile dni temu przyszła <strong>najstarsza partia</strong>, która wciąż leży na stanie — liczone od jej przyjęcia do dziś. „Leży &gt;180 dni" to ilość z partii starszych niż pół roku; to ona mówi, co realnie zalega.</p>';
+        body.innerHTML = note + (rows.length ? tableHTML(
+          [{ t: 'Kod' }, { t: 'Nazwa' }, { t: 'Na stanie', num: true }, { t: 'Najstarsza partia (dni)', num: true }, { t: 'Przedział' }, { t: 'Leży >180 dni', num: true }, { t: 'Wartość', num: true }],
           rows.map((g) => ({ cells: [
-            { v: g.itemCode, cls: 'mono-cell' }, { v: g.name }, { v: g.oldestDays == null ? '—' : fmtInt(g.oldestDays), cls: 'num' }, { v: bucket(g.oldestDays), cls: 'mut' }
+            { v: g.itemCode, cls: 'mono-cell' }, { v: g.name },
+            { v: fmtQty(g.qty, unitOf(g.itemCode)), cls: 'num' },
+            { v: g.oldestDays == null ? '—' : fmtInt(g.oldestDays), cls: 'num' },
+            { v: bucket(g.oldestDays), cls: 'mut' },
+            { v: g.agedQty ? fmtQty(g.agedQty, unitOf(g.itemCode)) : '—', cls: g.agedQty ? 'num' : 'num mut' },
+            { v: fmtMoney(g.value), cls: 'num' }
           ] }))
-        ) : emptyBlock('Brak danych wieku', '');
+        ) : emptyBlock('Brak danych wieku', ''));
       } else if (id === 'health') {
         const h = await api('/warehouse/health');
         const chip = (ok) => ok ? '<span class="chip chip-new">OK</span>' : '<span class="chip chip-orange">Do sprawdzenia</span>';
@@ -2658,8 +2697,15 @@
     return (pb || []).reduce((s, b) => s + (Number(b.qty) || 0) * (Number(b.unitPrice) || 0), 0);
   }
   // Komórka „Cena wg partii": jedna partia → cena; kilka partii → rozbicie linia po linii.
-  function batchesCell(pb) {
-    if (!pb || !pb.length) return { html: '<span class="mut">—</span>', cls: 'num' };
+  // Brak ceny nie jest jednoznaczny, więc kreska musi się tłumaczyć: dokumenty
+  // odtworzone z Odoo nie niosą kosztów (Odoo nie podaje ich w eksporcie ruchów),
+  // a goła kreska wyglądała jak zepsuty raport.
+  function batchesCell(pb, unpriced) {
+    if (!pb || !pb.length) {
+      return unpriced === 'import'
+        ? { html: '<span class="mut" title="Dokument odtworzony z historii Odoo — eksport ruchów z Odoo nie zawiera kosztu, więc ceny tego ruchu nie znamy.">brak (import)</span>', cls: 'num' }
+        : { html: '<span class="mut">—</span>', cls: 'num' };
+    }
     if (pb.length === 1) return { html: esc(fmtMoney(pb[0].unitPrice)), cls: 'num' };
     const lines = pb.map((b) => `<div style="white-space:nowrap;">${fmtInt(b.qty)} × ${esc(fmtMoney(b.unitPrice))}</div>`).join('');
     return { html: `<div style="display:flex;flex-direction:column;gap:2px;align-items:flex-end;" title="Ruch pokrywany z ${pb.length} partii cenowych">${lines}</div>`, cls: 'num' };
@@ -2702,10 +2748,11 @@
         { v: m.itemCategory || '—', cls: 'mut' },
         { v: MOVE_KIND[m.kind] || m.kind },
         { v: fmtInt(m.quantity), cls: 'num' },
-        batchesCell(m.priceBatches),
+        batchesCell(m.priceBatches, m.unpriced),
         { v: m.priceBatches && m.priceBatches.length ? fmtMoney(batchesValue(m.priceBatches)) : '—', cls: m.priceBatches && m.priceBatches.length ? 'num' : 'num mut' }
       ] }))
-    ) + (rep.truncated || rows.length > 300 ? `<p class="sub" style="margin:10px 0 0;">Pokazano pierwsze 300 ruchów. Pełny zakres pobierz przez „Eksportuj CSV".</p>` : '')
+    ) + (rep.importedUnpriced ? `<p class="sub" style="margin:10px 0 0;">${fmtInt(rep.importedUnpriced)} z ${fmtInt(rows.length)} ruchów jest bez ceny — to dokumenty odtworzone z historii Odoo, a eksport ruchów z Odoo nie zawiera kosztu. Ruchy zrobione w zapleczu mają ceny z partii FIFO.</p>` : '')
+      + (rep.truncated || rows.length > 300 ? `<p class="sub" style="margin:10px 0 0;">Pokazano pierwsze 300 ruchów. Pełny zakres pobierz przez „Eksportuj CSV".</p>` : '')
       : emptyBlock('Brak ruchów w okresie', p.from || p.to ? 'Zmień zakres dat lub kategorię.' : 'Domyślnie ostatnie 30 dni.');
     body.innerHTML = tiles + toolbar + table;
     // Auto-zastosuj po zmianie kategorii (bez klikania „Zastosuj").
@@ -2724,11 +2771,13 @@
   function exportPeriodCSV() {
     const rep = state.mag.periodRep || {}; const rows = rep.rows || [];
     if (!rows.length) { toast('Brak ruchów do eksportu.', true); return; }
-    const header = ['Data', 'Kod', 'Nazwa', 'Kategoria', 'Ruch', 'Ilość', 'Cena jedn.', 'Wartość', 'Z lokalizacji', 'Do lokalizacji'];
+    // Kolumna „Uwaga" istnieje dla księgowości: pusta cena w arkuszu wygląda jak
+    // przeoczenie, a to jest brak danych po stronie źródła (import z Odoo).
+    const header = ['Data', 'Kod', 'Nazwa', 'Kategoria', 'Ruch', 'Ilość', 'Cena jedn.', 'Wartość', 'Z lokalizacji', 'Do lokalizacji', 'Uwaga'];
     const out = [header];
     rows.forEach((m) => {
       const base = [fmtDay(m.doneAt), m.itemCode, m.itemName || '', m.itemCategory || '', MOVE_KIND[m.kind] || m.kind];
-      const tail = [m.fromName || '', m.toName || ''];
+      const tail = [m.fromName || '', m.toName || '', m.unpriced === 'import' ? 'brak ceny — import historii z Odoo' : ''];
       const pb = m.priceBatches || [];
       const money2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
       if (pb.length > 1) {
@@ -3346,7 +3395,7 @@
 
   // -------------------------------------------------------------- global events
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-go],[data-view],[data-sheet],[data-detail],[data-request],[data-transfer],[data-report],[data-return],[data-req-act],[data-req-cancel],[data-cmt-send],[data-notif-resolve],[data-sec-toggle],[data-rej-tab],[data-rej-csv],[data-user-new],[data-user-del],[data-user-offboard],[data-offb-finish],[data-close-drawer],[data-close-sheet],[data-soon],#sheetSubmit,[data-stop],[data-mag-tab],[data-mag-optab],[data-mag-report],[data-mag-op],[data-mag-csv],[data-mag-new-op],[data-mag-config-add],[data-op-addline],[data-op-delline],[data-op-save],[data-op-validate],[data-op-cancel],[data-op-reverse],[data-sup-edit],[data-sup-del],[data-loc-edit],[data-loc-del],[data-lic-new],[data-lic-detail],[data-lic-edit],[data-lic-del],[data-acc-tab],[data-acc-new],[data-acc-edit],[data-acc-del],[data-acc-bulk-apply],[data-idn-new],[data-idn-detail],[data-idn-edit],[data-idn-del],[data-theme-opt],[data-pref-toggle],[data-tw-new],[data-tw-edit],[data-tw-del],[data-twp-new],[data-twp-edit],[data-twp-del],[data-tw-return-mode],[data-ai-invoice],[data-ai-new],[data-ai-edit],[data-ai-transfer],[data-ai-discard],[data-ai-import],[data-ai-export],[data-rr-new],[data-rr-edit],[data-rr-del],[data-rr-replenish],[data-prod-new],[data-prod-edit],[data-prod-import],[data-batch-add],[data-batch-del],[data-prod-save],[data-health-recompute],[data-op-pdf],[data-dst-edit],[data-dst-del],[data-period-apply],[data-period-csv],[data-stockat-apply],[data-stockat-csv],[data-stockat-clear],[data-mag-invoice],[data-op-resolve],[data-conv-apply],[data-conv-reset],[data-conv-csv]');
+    const t = e.target.closest('[data-go],[data-view],[data-sheet],[data-detail],[data-request],[data-transfer],[data-report],[data-return],[data-req-act],[data-req-cancel],[data-cmt-send],[data-notif-resolve],[data-sec-toggle],[data-rej-tab],[data-rej-csv],[data-user-new],[data-user-del],[data-user-offboard],[data-offb-finish],[data-close-drawer],[data-close-sheet],[data-soon],#sheetSubmit,[data-stop],[data-mag-tab],[data-mag-optab],[data-mag-report],[data-mag-op],[data-mag-csv],[data-mag-new-op],[data-mag-config-add],[data-op-addline],[data-op-delline],[data-op-save],[data-op-validate],[data-op-cancel],[data-op-discard],[data-op-reverse],[data-sup-edit],[data-sup-del],[data-loc-edit],[data-loc-del],[data-lic-new],[data-lic-detail],[data-lic-edit],[data-lic-del],[data-acc-tab],[data-acc-new],[data-acc-edit],[data-acc-del],[data-acc-bulk-apply],[data-idn-new],[data-idn-detail],[data-idn-edit],[data-idn-del],[data-theme-opt],[data-pref-toggle],[data-tw-new],[data-tw-edit],[data-tw-del],[data-twp-new],[data-twp-edit],[data-twp-del],[data-tw-return-mode],[data-ai-invoice],[data-ai-new],[data-ai-edit],[data-ai-transfer],[data-ai-discard],[data-ai-import],[data-ai-export],[data-rr-new],[data-rr-edit],[data-rr-del],[data-rr-replenish],[data-prod-new],[data-prod-edit],[data-prod-import],[data-batch-add],[data-batch-del],[data-prod-save],[data-health-recompute],[data-op-pdf],[data-dst-edit],[data-dst-del],[data-period-apply],[data-period-csv],[data-stockat-apply],[data-stockat-csv],[data-stockat-clear],[data-mag-invoice],[data-op-resolve],[data-conv-apply],[data-conv-reset],[data-conv-csv]');
     if (!t) return;
 
     if (t.hasAttribute('data-rr-new')) { openSheet('reorderRule', {}); return; }
@@ -3419,6 +3468,7 @@
     if (t.hasAttribute('data-op-save')) { saveOp().catch((err) => toast(err.message || 'Nie udało się zapisać.', true)); return; }
     if (t.hasAttribute('data-op-validate')) { validateOp(); return; }
     if (t.hasAttribute('data-op-cancel')) { cancelOp(); return; }
+    if (t.hasAttribute('data-op-discard')) { discardOp(); return; }
     if (t.hasAttribute('data-op-reverse')) { reverseOp(t.getAttribute('data-op-reverse')); return; }
     if (t.hasAttribute('data-sup-edit')) { const s = (state.mag.suppliers || []).find((x) => x.id === t.getAttribute('data-sup-edit')); openSheet('supplier', s || {}); return; }
     if (t.hasAttribute('data-sup-del')) { delSupplier(t.getAttribute('data-sup-del')); return; }
