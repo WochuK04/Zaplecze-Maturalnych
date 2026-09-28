@@ -41,28 +41,39 @@ export function buildLinesTable(op) {
 
   if (op.type === 'receipt') {
     let totalValue = 0;
-    let priced = 0;
+    let priced = 0;      // cena wprost z dokumentu
+    let estimated = 0;   // wycena wtórna kosztem kartoteki (dokument z importu Odoo)
     const rows = lines.map(l => {
       const qty = Number(l.quantity) || 0;
-      // Brak ceny to NIE zero. Dokumenty odtworzone z historii Odoo nie mają kosztu
-      // w pozycjach, a drukowanie „0,00 zł" robiło z tego cenę zakupu — dokument szedł
-      // do księgowości i wyglądał, jakby towar przyszedł za darmo.
-      const hasPrice = l.unitPrice != null && Number.isFinite(Number(l.unitPrice));
-      if (!hasPrice) return [l.itemCode || '', l.itemName || '', fmtIlosc(qty), '—', '—'];
-      const price = Number(l.unitPrice);
+      // Cena z dokumentu ma pierwszeństwo. Gdy jej nie ma — bo dokument odtworzyliśmy
+      // z historii Odoo, a ta nie niesie kosztu w pozycjach — wchodzi wycena FIFO
+      // z partii kartoteki (liczy ją wołający). Kolumna jest jedna, więc pozycja
+      // rozłożona na dwie warstwy pokazuje cenę wypadkową dokładnie tych warstw.
+      // Gwiazdka i nota pod tabelą mówią, że to wycena, nie kwota z faktury. Zera nie
+      // drukujemy nigdy: „0,00 zł" znaczyłoby, że towar przyszedł za darmo.
+      const zDokumentu = l.unitPrice != null && Number.isFinite(Number(l.unitPrice));
+      const zKartoteki = !zDokumentu && l.fallbackUnitPrice != null && Number.isFinite(Number(l.fallbackUnitPrice));
+      if (!zDokumentu && !zKartoteki) return [l.itemCode || '', l.itemName || '', fmtIlosc(qty), '—', '—'];
+
+      const price = Number(zDokumentu ? l.unitPrice : l.fallbackUnitPrice);
       const value = qty * price;
       totalValue += value;
-      priced += 1;
-      return [l.itemCode || '', l.itemName || '', fmtIlosc(qty), fmtZl(price), fmtZl(value)];
+      if (zDokumentu) priced += 1; else estimated += 1;
+      const gwiazdka = zDokumentu ? '' : ' *';
+      return [l.itemCode || '', l.itemName || '', fmtIlosc(qty), fmtZl(price) + gwiazdka, fmtZl(value) + gwiazdka];
     });
     return {
       columns: [
-        { label: 'Kod', width: 90 }, { label: 'Nazwa', width: 205 },
+        { label: 'Kod', width: 90 }, { label: 'Nazwa', width: 195 },
         { label: 'Ilość', width: 50, align: 'right' },
-        { label: 'Cena', width: 70, align: 'right' },
-        { label: 'Wartość', width: 80, align: 'right' }
+        { label: 'Cena', width: 75, align: 'right' },
+        { label: 'Wartość', width: 85, align: 'right' }
       ],
-      rows, totalValue, pricedLines: priced, unpricedLines: lines.length - priced
+      rows,
+      totalValue,
+      pricedLines: priced,
+      estimatedLines: estimated,
+      unpricedLines: lines.length - priced - estimated
     };
   }
 
@@ -185,7 +196,7 @@ export function renderOperationPdf(doc, op) {
   doc.font('Bold').fontSize(12).fillColor('#000000').text('Pozycje');
   doc.moveDown(0.3);
 
-  const { columns, rows, totalValue, pricedLines, unpricedLines } = buildLinesTable(op);
+  const { columns, rows, totalValue, pricedLines, estimatedLines, unpricedLines } = buildLinesTable(op);
   const startY = doc.y;
   let endY = startY;
   if (rows.length) {
@@ -196,26 +207,33 @@ export function renderOperationPdf(doc, op) {
     endY = doc.y;
   }
 
-  // Suma wartości dla przyjęcia. Gdy żadna pozycja nie ma ceny, suma „0,00 zł" byłaby
-  // fałszywa — piszemy wprost, że dokument przyszedł bez kosztów. Gdy ceny ma tylko
-  // część pozycji, suma jest prawdziwa, ale niepełna i musi to o sobie powiedzieć.
+  // Podsumowanie przyjęcia. Nazwa sumy musi odpowiadać temu, co w niej siedzi:
+  // „wartość zakupu" ma znaczyć kwotę z dokumentu. Gdy wszystko policzono z partii,
+  // to jest wycena, nie zakup — i etykieta ma to mówić, bo ten papier czyta
+  // księgowość. Zera nie drukujemy nigdy: znaczyłoby „za darmo".
   if (op.type === 'receipt') {
     let y = endY + 6;
-    const podsumowanie = pricedLines === 0 && unpricedLines > 0
-      ? 'Razem (wartość zakupu): brak danych'
+    const maCokolwiek = pricedLines > 0 || estimatedLines > 0;
+    const etykieta = !maCokolwiek ? 'Razem: brak danych'
+      : pricedLines === 0 ? `Razem (wycena FIFO z partii): ${fmtZl(totalValue)}`
       : `Razem (wartość zakupu): ${fmtZl(totalValue)}`;
     doc.font('Bold').fontSize(11).fillColor('#000000')
-      .text(podsumowanie, left, y, { width: right - left, align: 'right' });
+      .text(etykieta, left, y, { width: right - left, align: 'right' });
 
+    const noty = [];
+    if (estimatedLines > 0) {
+      const ile = pricedLines === 0
+        ? 'Dokument nie niósł własnych cen'
+        : `${estimatedLines} z ${rows.length} pozycji`;
+      noty.push(`* ${ile} — wyceniono FIFO z partii cenowych kartoteki. Partie opisują stan bieżący, nie ten z dnia przyjęcia.`);
+    }
     if (unpricedLines > 0) {
+      noty.push(`${unpricedLines} z ${rows.length} pozycji bez ceny — kartoteka nie ma żadnej partii cenowej.`);
+    }
+    for (const nota of noty) {
       y = doc.y + 2;
-      const ile = pricedLines === 0 ? 'Dokument nie zawiera cen' : `${unpricedLines} z ${rows.length} pozycji jest bez ceny`;
-      // Powód podajemy tylko wtedy, gdy go znamy. Przyjęcie wystawione w zapleczu może
-      // nie mieć ceny z zupełnie innego powodu i zmyślanie tu wyjaśnienia byłoby gorsze
-      // niż jego brak.
-      const powod = op.importedFrom ? ' — historia odtworzona z Odoo, której eksport nie niesie kosztu zakupu.' : '.';
       doc.font('Sans').fontSize(9).fillColor('#666666')
-        .text(`${ile}${powod}`, left, y, { width: right - left, align: 'right' });
+        .text(nota, left, y, { width: right - left, align: 'right' });
     }
   }
 

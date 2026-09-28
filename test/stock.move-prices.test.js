@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { movePriceBatches } from '../src/stock-history.js';
+import { movePriceBatches, assignFifoPrices, newFifoQueue, takeFifoLayers } from '../src/stock-history.js';
 
 // Wycena pojedynczego ruchu w raporcie „Ruchy w okresie". Zgłoszenie z Magazynu
 // brzmiało „eksport ruchów w okresie nie pobiera cen i wartości" — okazało się, że
@@ -51,25 +51,85 @@ test('konwersja: źródło po partiach zdjętych, cel po koszcie przeniesionym',
   assert.deepEqual(movePriceBatches(op, ruch('G060', 20)).batches, [{ qty: 20, unitPrice: 8.5 }]);
 });
 
-// Sedno zgłoszenia: odróżnić „nie znamy ceny, bo dokument przyszedł z Odoo" od
-// „coś się zepsuło". Pierwsze jest stanem faktycznym i UI ma to powiedzieć wprost.
-test('dokument z importu Odoo zgłasza brak ceny jako brak danych źródła', () => {
-  const op = { type: 'receipt', importedFrom: 'odoo', lines: [{ itemCode: 'T038', quantity: 10 }] };
-  const { batches, unpriced } = movePriceBatches(op, ruch('T038', 10));
-  assert.equal(batches, null);
-  assert.equal(unpriced, 'import');
+test('cena z dokumentu jest oznaczona jako pochodząca z dokumentu', () => {
+  const op = { type: 'receipt', lines: [{ itemCode: 'G039', unitPrice: 6.95 }] };
+  assert.equal(movePriceBatches(op, ruch('G039', 100)).source, 'dokument');
 });
 
-test('konwersja z importu też jest oznaczona jako import, nie jako pustka', () => {
-  const op = { type: 'conversion', importedFrom: 'odoo', lines: [{ itemCode: 'T020', targetItemCode: 'G063', quantity: 82 }] };
-  assert.equal(movePriceBatches(op, ruch('G063', 82)).unpriced, 'import');
+// Sedno zgłoszenia: dokument odtworzony z Odoo własnej ceny nie ma. Wtedy wchodzi
+// `assignFifoPrices` i dokłada ją z partii kartoteki — FIFO, nie średnia, bo kolumna
+// nazywa się „Cena wg partii" i ma pokazywać partie.
+test('dokument z importu zgłasza brak ceny — wycenę dokłada dopiero FIFO', () => {
+  const op = { type: 'receipt', importedFrom: 'odoo', lines: [{ itemCode: 'T038', quantity: 10 }] };
+  assert.deepEqual(movePriceBatches(op, ruch('T038', 10)), { batches: null, source: null, unpriced: 'import' });
 });
 
 test('ruch bez dokumentu to brak danych, nie import', () => {
-  assert.deepEqual(movePriceBatches(null, ruch('G001', 3)), { batches: null, unpriced: 'brak-danych' });
+  assert.deepEqual(movePriceBatches(null, ruch('G001', 3)), { batches: null, source: null, unpriced: 'brak-danych' });
 });
 
 test('dokument zaplecza bez detalu nie udaje importu', () => {
   const op = { type: 'delivery', deliveryDetail: [] };
   assert.equal(movePriceBatches(op, ruch('G001', 3)).unpriced, 'brak-danych');
+});
+
+// --- FIFO z partii kartoteki ----------------------------------------------------
+
+const wiersz = (kod, qty, kiedy, extra = {}) =>
+  ({ itemCode: kod, quantity: qty, doneAt: kiedy, priceBatches: null, source: null, unpriced: 'import', ...extra });
+
+test('ruch mieszczący się w jednej partii bierze jej cenę', () => {
+  const rows = [wiersz('G039', 40, '2026-09-10')];
+  assignFifoPrices(rows, new Map([['G039', [{ qty: 100, unitPrice: 6.95 }]]]));
+  assert.deepEqual(rows[0].priceBatches, [{ qty: 40, unitPrice: 6.95 }]);
+  assert.equal(rows[0].source, 'fifo');
+  assert.equal(rows[0].unpriced, null);
+});
+
+// To jest różnica, o którą chodzi: 9,5 kg krówek to 4,5 po 22,10 i 5 po 24,00,
+// a nie 9,5 po uśrednionych 23,10.
+test('ruch przez dwie partie pokazuje obie warstwy, nie ich średnią', () => {
+  const rows = [wiersz('T016', 9.5, '2026-09-08')];
+  assignFifoPrices(rows, new Map([['T016', [{ qty: 4.5, unitPrice: 22.1 }, { qty: 5, unitPrice: 24 }]]]));
+  assert.deepEqual(rows[0].priceBatches, [{ qty: 4.5, unitPrice: 22.1 }, { qty: 5, unitPrice: 24 }]);
+  const wartosc = rows[0].priceBatches.reduce((s, b) => s + b.qty * b.unitPrice, 0);
+  assert.equal(Math.round(wartosc * 100) / 100, 219.45);
+});
+
+test('kolejka jest wspólna: starszy ruch zjada partię przed młodszym', () => {
+  const rows = [wiersz('G039', 60, '2026-09-20'), wiersz('G039', 40, '2026-09-10')];
+  assignFifoPrices(rows, new Map([['G039', [{ qty: 40, unitPrice: 5 }, { qty: 60, unitPrice: 8 }]]]));
+  const starszy = rows.find(r => r.doneAt === '2026-09-10');
+  const mlodszy = rows.find(r => r.doneAt === '2026-09-20');
+  assert.deepEqual(starszy.priceBatches, [{ qty: 40, unitPrice: 5 }]);
+  assert.deepEqual(mlodszy.priceBatches, [{ qty: 60, unitPrice: 8 }]);
+});
+
+test('ruch z ceną z dokumentu nie rusza kolejki', () => {
+  const zDokumentu = wiersz('G039', 40, '2026-09-01', { priceBatches: [{ qty: 40, unitPrice: 99 }], source: 'dokument', unpriced: null });
+  const rows = [zDokumentu, wiersz('G039', 40, '2026-09-10')];
+  assignFifoPrices(rows, new Map([['G039', [{ qty: 40, unitPrice: 5 }, { qty: 60, unitPrice: 8 }]]]));
+  assert.deepEqual(rows[0].priceBatches, [{ qty: 40, unitPrice: 99 }]);
+  assert.deepEqual(rows[1].priceBatches, [{ qty: 40, unitPrice: 5 }]);
+});
+
+// Partie opisują stan dzisiejszy, a historia sięga wstecz — kolejka potrafi się
+// skończyć przed listą ruchów. Dociągamy wtedy po ostatniej znanej cenie warstwy.
+test('gdy partie się wyczerpią, dalsze ruchy idą po ostatniej znanej cenie', () => {
+  const rows = [wiersz('G039', 150, '2026-09-10')];
+  assignFifoPrices(rows, new Map([['G039', [{ qty: 100, unitPrice: 6.95 }]]]));
+  assert.deepEqual(rows[0].priceBatches, [{ qty: 100, unitPrice: 6.95 }, { qty: 50, unitPrice: 6.95 }]);
+});
+
+test('kartoteka bez partii zostaje bez ceny', () => {
+  const rows = [wiersz('X001', 5, '2026-09-10')];
+  assignFifoPrices(rows, new Map());
+  assert.equal(rows[0].priceBatches, null);
+  assert.equal(rows[0].unpriced, 'import');
+});
+
+test('kolejka ignoruje partie zużyte do zera, ale pamięta ich cenę', () => {
+  const q = newFifoQueue([{ qty: 0, unitPrice: 4 }, { qty: 0, unitPrice: 7 }]);
+  assert.deepEqual(q.warstwy, []);
+  assert.deepEqual(takeFifoLayers(q, 3), [{ qty: 3, unitPrice: 7 }]);
 });
