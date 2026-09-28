@@ -1,0 +1,355 @@
+// Zaciągnięcie historii magazynu z Odoo: ruchy, przekazy i PRZETWORZENIA.
+//
+// Odoo nie ma osobnego dokumentu „przetworzenie towaru w gadżet" — magazyn robi to
+// dwiema korektami stanu (zdjęcie X z kartoteki towaru, dopisanie X na kartotece
+// gadżetu chwilę później). Odtwarzamy z nich operacje typu `conversion`, czyli
+// dokładnie ten sam byt, który zaplecze tworzy dziś samo (src/stock.js). Reszta
+// linii ruchu wchodzi jako przyjęcia, wydania i korekty.
+//
+// Dokumenty wchodzą jako JUŻ WYKONANE (state: 'done') — to zapis zdarzeń, które
+// wydarzyły się w Odoo, a nie operacje do zatwierdzania. Dlatego nie przechodzą
+// przez validateOperation (ten liczy koszty i rezerwacje wg stanu NA DZIŚ, więc
+// odtwarzając przeszłość zjadłby partie cenowe zaimportowane z bieżącego stanu).
+// Partie cenowe ustawia `odoo-import.mjs` ze stanu bieżącego; tu ich nie ruszamy.
+//
+// Użycie:
+//   node scripts/odoo-historia.mjs                     # na sucho, dane z RPC
+//   node scripts/odoo-historia.mjs "…/Przesunięcia …xlsx" "…/Przekaz …xlsx"
+//   node scripts/odoo-historia.mjs --zapisz
+//   node scripts/odoo-historia.mjs --zapisz --wyczysc  # najpierw usuń poprzedni import
+//
+// Kolejność: najpierw `odoo-import.mjs` (produkty), potem to.
+
+import dotenv from 'dotenv';
+import path from 'path';
+import { ObjectId } from 'mongodb';
+import { fileURLToPath } from 'url';
+import { connectToDatabase, closeDb } from '../src/db.js';
+import { collections, ensureIndexes } from '../src/schema.js';
+import { seedStandardLocations, recomputeQuants, refreshItemCache } from '../src/stock.js';
+import { mergeProducts, normalizeMoveLine, detectConversions } from '../src/odoo.js';
+import { wczytaj } from './odoo/zrodlo.mjs';
+
+dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.env') });
+
+const args = process.argv.slice(2);
+const ZAPISZ = args.includes('--zapisz');
+const WYCZYSC = args.includes('--wyczysc');
+const sciezki = args.filter((a) => !a.startsWith('--'));
+
+const ZNACZNIK = 'odoo';           // importedFrom — po tym poznajemy dokumenty z importu
+const AKTOR = 'import@odoo';       // actorEmail ruchów historycznych
+const newId = () => new ObjectId();
+
+// Własna numeracja dokumentów importu. `stockOperations.reference` ma unikalny
+// indeks, a odnośniki korekt w Odoo się powtarzają („Zaktualizowana ilość produktu
+// (Rafał Szumełda)" na każdej), więc oryginał trzymamy w `sourceDocument`.
+const licznik = { conversion: 0, adjustment: 0 };
+const numer = (prefiks, typ) => `${prefiks}/${String(++licznik[typ]).padStart(5, '0')}`;
+
+const KATEGORIA_Z_PREFIKSU = { G: 'gadżet', T: 'Towar', O: 'opakowanie', S: 'sponsor' };
+
+const zrodlo = wczytaj(sciezki);
+const teraz = new Date();
+
+// --- mapa kodów: kod kartoteki Odoo → kod produktu w zapleczu po scaleniu --------
+const produkty = mergeProducts(zrodlo.produkty, { teraz });
+const naWiodacy = new Map();
+for (const p of produkty) {
+  naWiodacy.set(p.itemCode, p.itemCode);
+  for (const k of p.mergedCodes) naWiodacy.set(k, p.itemCode);
+}
+const kanon = (kod) => (kod ? naWiodacy.get(kod) || kod : null);
+
+// --- linie ruchu ----------------------------------------------------------------
+const wszystkieLinie = zrodlo.ruchy.map(normalizeMoveLine);
+const linie = wszystkieLinie
+  .filter((l) => l.status === 'Wykonano' || l.status === 'done')
+  .filter((l) => l.when instanceof Date && !Number.isNaN(l.when.getTime()));
+
+const bezKodu = linie.filter((l) => !l.kod);
+const zKodem = linie.filter((l) => l.kod).map((l) => ({ ...l, itemCode: kanon(l.kod) }));
+
+const { conversions, pozostaleKorekty } = detectConversions(zKodem);
+// Przetworzenia mapujemy na kody po scaleniu dopiero tutaj — parowanie musi widzieć
+// oryginalne kartoteki (scalenie potrafiłoby zetknąć źródło i cel w jeden kod).
+const przetworzenia = conversions
+  .map((c) => ({ ...c, sourceItem: kanon(c.sourceCode), targetItem: kanon(c.targetCode) }))
+  .filter((c) => c.sourceItem !== c.targetItem);
+
+const zwykle = zKodem.filter((l) => l.kind !== 'adjustment');
+const korekty = pozostaleKorekty;
+
+const db = await connectToDatabase();
+await ensureIndexes(db);
+const lok = await seedStandardLocations(db);
+const idLok = (kod) => (lok.get(kod) ? String(lok.get(kod)._id) : null);
+
+const items = db.collection(collections.items);
+const ops = db.collection(collections.stockOperations);
+const moves = db.collection(collections.stockMoves);
+
+const raport = {
+  zrodlo: zrodlo.zrodlo,
+  pliki: zrodlo.pliki,
+  baza: process.env.DB_NAME || process.env.MONGO_DB_NAME,
+  naSucho: !ZAPISZ,
+  liniiWZrodle: wszystkieLinie.length,
+  liniiWykonanych: linie.length,
+  pominietoBezKoduProduktu: [...new Set(bezKodu.map((l) => l.nazwa))],
+  przetworzen: przetworzenia.length,
+  przetworzenia: przetworzenia.map((c) => ({
+    kiedy: c.when.toISOString().slice(0, 16).replace('T', ' '),
+    ilosc: c.qty,
+    z: `${c.sourceCode} ${c.sourceName}`,
+    na: `${c.targetCode} ${c.targetName}`
+  })),
+  brakujaceKartoteki: [],
+  operacje: {},
+  ruchow: 0,
+  usunieteStanyOtwarcia: 0,
+  rozbieznosciStanu: []
+};
+
+// --- kartoteki, których nie ma w eksporcie produktów (zarchiwizowane w Odoo) ------
+const potrzebneKody = new Set([
+  ...zwykle.map((l) => l.itemCode),
+  ...korekty.map((l) => kanon(l.kod)),
+  ...przetworzenia.flatMap((c) => [c.sourceItem, c.targetItem])
+].filter(Boolean));
+
+const znane = new Set(
+  (await items.find({ itemCode: { $in: [...potrzebneKody] } }, { projection: { itemCode: 1 } }).toArray())
+    .map((d) => d.itemCode)
+);
+const brakujace = [...potrzebneKody].filter((k) => !znane.has(k));
+
+// Nazwę bierzemy z pierwszej linii ruchu, kategorię z prefiksu kodu. Takie kartoteki
+// wchodzą jako nieaktywne — to archiwum Odoo, nie żywy asortyment.
+const nazwaDlaKodu = new Map();
+for (const l of zKodem) {
+  const k = kanon(l.kod);
+  if (k && !nazwaDlaKodu.has(k)) nazwaDlaKodu.set(k, l.nazwa);
+}
+raport.brakujaceKartoteki = brakujace.map((k) => ({ itemCode: k, nazwa: nazwaDlaKodu.get(k) || k }));
+
+if (ZAPISZ && brakujace.length) {
+  await items.insertMany(brakujace.map((k) => ({
+    itemCode: k,
+    category: KATEGORIA_Z_PREFIKSU[k[0]] || 'Towar',
+    name: nazwaDlaKodu.get(k) || k,
+    details: '',
+    quantity: 0,
+    currentLocation: 'Magazyn',
+    conditionStatus: 'good',
+    operationalStatus: 'available',
+    assignedToName: null, assignedToEmail: null,
+    notes: 'Kartoteka zarchiwizowana w Odoo — odtworzona z historii ruchów',
+    imageUrl: '', thumbnailUrl: '', brand: '', model: '', qrCodeValue: '',
+    tags: [], serialNumber: '', warrantyUntil: '', detailedLocation: '',
+    priceBatches: [], mergedCodes: [],
+    isStudioLocked: false, isActive: false,
+    importedFrom: ZNACZNIK, createdAt: teraz, updatedAt: teraz
+  })));
+}
+
+// Ponowne uruchomienie bez --wyczysc rozbiłoby się o unikalny indeks na
+// `reference` w połowie zapisu. Lepiej powiedzieć to wprost, zanim cokolwiek pójdzie.
+if (ZAPISZ && !WYCZYSC) {
+  const juzSa = await ops.countDocuments({ importedFrom: ZNACZNIK });
+  if (juzSa) {
+    console.error(`W bazie jest już ${juzSa} dokumentów z importu Odoo.`);
+    console.error('Uruchom ponownie z --wyczysc, żeby je zastąpić.');
+    await closeDb();
+    process.exit(1);
+  }
+}
+
+if (ZAPISZ && WYCZYSC) {
+  const { deletedCount: dm } = await moves.deleteMany({ importedFrom: ZNACZNIK });
+  const { deletedCount: dop } = await ops.deleteMany({ importedFrom: ZNACZNIK });
+  raport.wyczyszczono = { ruchow: dm, operacji: dop };
+}
+
+// Stan otwarcia z migracji (`kind: 'opening'`, scripts/migrate-warehouse.js) to
+// syntetyczny ruch, który w swoim czasie wprowadził stan z `items.currentLocation`.
+// Historia z Odoo tłumaczy ten sam stan od zera — razem podwoiłyby ilości, więc
+// dla produktów objętych importem stan otwarcia znika.
+const filtrOtwarc = { kind: 'opening', itemCode: { $in: [...potrzebneKody] } };
+raport.usunieteStanyOtwarcia = await moves.countDocuments(filtrOtwarc);
+if (ZAPISZ && raport.usunieteStanyOtwarcia) await moves.deleteMany(filtrOtwarc);
+
+// --- budowa dokumentów ----------------------------------------------------------
+const przekazWg = new Map(zrodlo.przekazy.map((p) => [String(p.odnosnik || ''), p]));
+const dokOps = [];
+const dokMoves = [];
+
+const nowyRuch = (o) => ({
+  itemCode: o.itemCode,
+  fromLocationId: o.from || null,
+  toLocationId: o.to || null,
+  quantity: o.qty,
+  lot: null,
+  kind: o.kind,
+  state: 'done',
+  operationId: o.operationId,
+  actorEmail: AKTOR,
+  note: o.note || '',
+  doneAt: o.when,
+  createdAt: teraz,
+  importedFrom: ZNACZNIK
+});
+
+// 1) Przetworzenia → operacje `conversion` (dwa spięte ruchy, jak w validateOperation).
+for (const c of przetworzenia) {
+  const opId = newId();
+  dokOps.push({
+    _id: opId,
+    reference: numer('odoo/CONV', 'conversion'),
+    type: 'conversion',
+    state: 'done',
+    fromLocationId: idLok('WH/Stock'),
+    toLocationId: idLok('WH/Stock'),
+    contact: '', supplierId: null, supplierName: '', destinationId: null, destinationName: '',
+    scheduledAt: c.when,
+    sourceDocument: c.referencja || '',
+    note: `Odtworzone z korekt stanu w Odoo (${c.sourceCode} → ${c.targetCode}).`,
+    lines: [{ itemCode: c.sourceItem, targetItemCode: c.targetItem, quantity: c.qty }],
+    createdByEmail: AKTOR,
+    doneAt: c.when,
+    doneByEmail: AKTOR,
+    createdAt: teraz,
+    updatedAt: teraz,
+    importedFrom: ZNACZNIK
+  });
+  dokMoves.push(
+    nowyRuch({ itemCode: c.sourceItem, from: idLok('WH/Stock'), to: idLok('VIRT/Conversion'), qty: c.qty, kind: 'conversion', operationId: String(opId), when: c.when, note: 'Przetworzenie (Odoo)' }),
+    nowyRuch({ itemCode: c.targetItem, from: idLok('VIRT/Conversion'), to: idLok('WH/Stock'), qty: c.qty, kind: 'conversion', operationId: String(opId), when: c.when, note: 'Przetworzenie (Odoo)' })
+  );
+}
+
+// 2) Zwykłe linie → jedna operacja na przekaz Odoo (mag/IN/00004, mag/OUT/00012…).
+const wgPrzekazu = new Map();
+for (const l of zwykle) {
+  const k = l.referencja || `bez-odnosnika/${l.when.toISOString().slice(0, 10)}/${l.kind}`;
+  if (!wgPrzekazu.has(k)) wgPrzekazu.set(k, []);
+  wgPrzekazu.get(k).push(l);
+}
+
+for (const [ref, grupa] of wgPrzekazu) {
+  const meta = przekazWg.get(ref) || null;
+  const typ = grupa[0].kind === 'receipt' ? 'receipt' : grupa[0].kind === 'delivery' ? 'delivery' : 'internal';
+  const kiedy = grupa.reduce((a, b) => (a && a > b.when ? a : b.when), null);
+  const opId = newId();
+  dokOps.push({
+    _id: opId,
+    reference: ref,
+    type: typ,
+    state: 'done',
+    fromLocationId: idLok(grupa[0].fromKod) || null,
+    toLocationId: idLok(grupa[0].toKod) || null,
+    contact: String(meta?.kontakt || ''),
+    supplierId: null, supplierName: typ === 'receipt' ? String(meta?.kontakt || '') : '',
+    destinationId: null, destinationName: typ === 'delivery' ? String(meta?.kontakt || '') : '',
+    scheduledAt: meta?.data || kiedy,
+    sourceDocument: String(meta?.dokument || ''),
+    note: 'Import historii z Odoo',
+    lines: grupa.map((l) => ({ itemCode: l.itemCode, quantity: l.qty })),
+    createdByEmail: AKTOR,
+    doneAt: kiedy,
+    doneByEmail: AKTOR,
+    createdAt: teraz, updatedAt: teraz,
+    importedFrom: ZNACZNIK
+  });
+  for (const l of grupa) {
+    dokMoves.push(nowyRuch({
+      itemCode: l.itemCode, from: idLok(l.fromKod), to: idLok(l.toKod),
+      qty: l.qty, kind: l.kind, operationId: String(opId), when: l.when, note: ref
+    }));
+  }
+}
+
+// 3) Pozostałe korekty → operacje `adjustment`, grupowane po odnośniku i dniu.
+const wgKorekty = new Map();
+for (const l of korekty) {
+  const k = `${l.referencja}|${l.when.toISOString().slice(0, 10)}`;
+  if (!wgKorekty.has(k)) wgKorekty.set(k, []);
+  wgKorekty.get(k).push(l);
+}
+
+for (const [k, grupa] of wgKorekty) {
+  const [ref] = k.split('|');
+  const opId = newId();
+  const kiedy = grupa.reduce((a, b) => (a && a > b.when ? a : b.when), null);
+  dokOps.push({
+    _id: opId,
+    reference: numer('odoo/ADJ', 'adjustment'),
+    type: 'adjustment',
+    state: 'done',
+    fromLocationId: idLok('VIRT/Inventory'),
+    toLocationId: idLok('WH/Stock'),
+    contact: '', supplierId: null, supplierName: '', destinationId: null, destinationName: '',
+    scheduledAt: kiedy,
+    sourceDocument: ref,
+    note: 'Korekta stanu przeniesiona z Odoo',
+    lines: grupa.map((l) => ({
+      itemCode: kanon(l.kod),
+      locationId: idLok('WH/Stock'),
+      quantity: l.qty,
+      countedQty: null
+    })),
+    createdByEmail: AKTOR,
+    doneAt: kiedy, doneByEmail: AKTOR,
+    createdAt: teraz, updatedAt: teraz,
+    importedFrom: ZNACZNIK
+  });
+  for (const l of grupa) {
+    dokMoves.push(nowyRuch({
+      itemCode: kanon(l.kod), from: idLok(l.fromKod), to: idLok(l.toKod),
+      qty: l.qty, kind: 'adjustment', operationId: String(opId), when: l.when, note: ref
+    }));
+  }
+}
+
+raport.operacje = dokOps.reduce((a, o) => ({ ...a, [o.type]: (a[o.type] || 0) + 1 }), {});
+raport.ruchow = dokMoves.length;
+
+if (ZAPISZ) {
+  if (dokOps.length) await ops.insertMany(dokOps);
+  if (dokMoves.length) await moves.insertMany(dokMoves);
+  await recomputeQuants(db);
+  for (const kod of potrzebneKody) await refreshItemCache(db, kod);
+}
+
+// --- kontrola: czy odtworzona historia daje stan zgodny z Odoo? -----------------
+// Liczymy bilans z ruchów i porównujemy ze stanem z kartoteki Odoo (po scaleniu).
+const stanZOdoo = new Map(produkty.map((p) => [p.itemCode, p.quantity]));
+const bilans = new Map();
+// Ruchy sprzed importu, które zostają w bazie (np. operacje robione już w
+// zapleczu), też wchodzą do bilansu — inaczej kontrola pokazywałaby fałszywe
+// rozjazdy. Wyłączamy stan otwarcia (zastąpiony historią) i ruchy z tego importu:
+// przy --zapisz siedzą już w bazie, a w `dokMoves` mamy je i tak.
+const zostajace = await moves.find({
+  itemCode: { $in: [...potrzebneKody] },
+  kind: { $ne: 'opening' },
+  importedFrom: { $ne: ZNACZNIK }
+}).toArray();
+for (const m of [...dokMoves, ...zostajace]) {
+  const wIn = m.toLocationId === idLok('WH/Stock');
+  const wOut = m.fromLocationId === idLok('WH/Stock');
+  if (!wIn && !wOut) continue;
+  bilans.set(m.itemCode, (bilans.get(m.itemCode) || 0) + (wIn ? m.quantity : -m.quantity));
+}
+for (const [kod, stan] of stanZOdoo) {
+  const z = bilans.get(kod) ?? 0;
+  if (z !== stan) raport.rozbieznosciStanu.push({ itemCode: kod, wOdoo: stan, zHistorii: z, roznica: stan - z });
+}
+
+console.log(JSON.stringify(raport, null, 2));
+if (!ZAPISZ) console.error('\nPRÓBA NA SUCHO — nic nie zapisano. Dodaj --zapisz, żeby wykonać.');
+if (raport.rozbieznosciStanu.length) {
+  console.error(`\nUWAGA: ${raport.rozbieznosciStanu.length} kartotek ma stan z historii inny niż w Odoo`);
+  console.error('(zwykle ręczna edycja w Odoo poza rejestrem ruchów). Szczegóły w „rozbieznosciStanu”.');
+}
+
+await closeDb();

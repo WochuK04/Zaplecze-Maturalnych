@@ -10,7 +10,7 @@ import { ObjectId } from 'mongodb';
 import { getDb, connectToDatabase, getMongoClient } from './db.js';
 import { collections, ensureIndexes } from './schema.js';
 import { setupPassport, requireAuth, requireAdmin, requireManager, requireWarehouseRead } from './auth.js';
-import { LOCATION_KINDS, OPERATION_TYPES, RESERVING_OP_TYPES, validateOperation, reverseOperation, nextReference, isOperationType, computeReplenishment, replenishmentDraft, reservedQuantities, checkReservation, isReorderScope, isProtectedLocation, slugifyLocationCode, cascadeItemCodeRename, computeValuation, summarizeMovesByKind, computeGiftThresholdReport, GIFT_VAT_THRESHOLD, computeStockHealth, recomputeQuants, refreshItemCache, computeAging, applyMove } from './stock.js';
+import { LOCATION_KINDS, OPERATION_TYPES, RESERVING_OP_TYPES, validateOperation, reverseOperation, nextReference, isOperationType, computeReplenishment, replenishmentDraft, reservedQuantities, checkReservation, isReorderScope, isProtectedLocation, slugifyLocationCode, cascadeItemCodeRename, computeValuation, summarizeMovesByKind, computeGiftThresholdReport, GIFT_VAT_THRESHOLD, computeStockHealth, recomputeQuants, refreshItemCache, computeAging, computeConversionHistory, applyMove } from './stock.js';
 import { createOperationPdfDoc } from './operation-pdf.js';
 import { MANAGER_MAP } from './manager-map.js';
 import { licenseView } from './lib/licenses.js';
@@ -965,6 +965,42 @@ app.get('/warehouse/gift-threshold', requireAuth, requireWarehouseRead, async (r
     .toArray();
   const items = all.filter(it => isWarehouseCategory(it.category));
   res.json(computeGiftThresholdReport(items, threshold));
+});
+
+// Historia przetransferowań (Raportowanie → „Przetworzenia"): co i kiedy zostało
+// przerobione na gadżet — operacje typu `conversion`, zarówno zrobione w zapleczu,
+// jak i odtworzone z Odoo (scripts/odoo-historia.mjs). Filtry: ?from=&to= (dni),
+// ?itemCode= (dotyczy zarówno źródła, jak i celu). Tylko odczyt.
+app.get('/warehouse/conversions', requireAuth, requireWarehouseRead, async (req, res) => {
+  const db = await getDb();
+
+  const parseDay = (v, endOfDay) => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || '').trim());
+    if (!m) return null;
+    const d = new Date(`${m[1]}-${m[2]}-${m[3]}T${endOfDay ? '23:59:59.999' : '00:00:00.000'}`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+
+  const filter = { type: 'conversion', state: 'done' };
+  const from = parseDay(req.query.from, false);
+  const to = parseDay(req.query.to, true);
+  if (from || to) filter.doneAt = { ...(from ? { $gte: from } : {}), ...(to ? { $lte: to } : {}) };
+
+  const itemCode = String(req.query.itemCode || '').trim();
+  if (itemCode) filter.$or = [{ 'lines.itemCode': itemCode }, { 'lines.targetItemCode': itemCode }];
+
+  const operations = await db.collection(collections.stockOperations)
+    .find(filter).sort({ doneAt: -1, _id: -1 }).toArray();
+
+  const codes = [...new Set(operations.flatMap(o =>
+    (o.lines || []).flatMap(l => [l.itemCode, l.targetItemCode])).filter(Boolean))];
+  const items = codes.length
+    ? await db.collection(collections.items)
+        .find({ itemCode: { $in: codes } }, { projection: { itemCode: 1, name: 1, category: 1 } })
+        .toArray()
+    : [];
+
+  res.json(computeConversionHistory(operations, new Map(items.map(it => [it.itemCode, it]))));
 });
 
 // Aging zalegania (Raportowanie): ile stanu i wartości „leży" wg wieku warstw partii

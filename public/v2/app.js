@@ -1889,7 +1889,8 @@
   const OP_TAB_ORDER = ['receipt', 'delivery', 'scrap', 'adjustment', 'conversion'];
   const REPORTS = [
     ['stock', 'Stan'], ['valuation', 'Wycena stanu'], ['moves', 'Historia ruchów'],
-    ['period', 'Ruchy w okresie'], ['gift', 'Prezenty ≤20 zł'], ['aging', 'Wiek zapasu'], ['health', 'Spójność danych']
+    ['conversions', 'Przetworzenia'], ['period', 'Ruchy w okresie'], ['gift', 'Prezenty ≤20 zł'],
+    ['aging', 'Wiek zapasu'], ['health', 'Spójność danych']
   ];
 
   function tableHTML(headers, rows) {
@@ -2358,6 +2359,8 @@
             { v: fmtInt(m.quantity), cls: 'num' }, { v: m.toName || m.fromName || '—', cls: 'mut' }
           ] }))
         ) : emptyBlock('Brak ruchów', '');
+      } else if (id === 'conversions') {
+        await renderConversionsReport();
       } else if (id === 'period') {
         await renderPeriodReport();
       } else if (id === 'gift') {
@@ -2398,6 +2401,119 @@
         body.innerHTML = table + (isAdmin ? '<div style="margin-top:14px;"><button class="btn btn-ghost btn-sm" data-health-recompute>Przelicz kondycję wszystkich</button></div>' : '');
       }
     } catch (e) { body.innerHTML = emptyBlock('Nie udało się wczytać', e.message || ''); }
+  }
+
+  // ---- Raport „Przetworzenia" (historia przetransferowań: co zostało zmienione w gadżet)
+  //
+  // Jeden wiersz = jedna pozycja konwersji: z czego, na co, ile i kiedy. Dokumenty
+  // odtworzone z Odoo nie niosą kosztu jednostkowego (Odoo nie ma go w eksporcie
+  // ruchów) — w kolumnie „Koszt/szt." jest wtedy kreska, nie zmyślona kwota.
+  function conversionsState() {
+    if (!state.mag.conv) state.mag.conv = { from: '', to: '', q: '' };
+    return state.mag.conv;
+  }
+
+  async function renderConversionsReport() {
+    const body = $('[data-mag-report-body]');
+    if (!body) return;
+    const f = conversionsState();
+    const qs = new URLSearchParams();
+    if (f.from) qs.set('from', f.from);
+    if (f.to) qs.set('to', f.to);
+
+    body.innerHTML = '<div class="loading">Ładowanie…</div>';
+    let rep;
+    try { rep = await api('/warehouse/conversions' + (qs.toString() ? `?${qs}` : '')); }
+    catch (e) { body.innerHTML = emptyBlock('Nie udało się wczytać', e.message || ''); return; }
+
+    const q = String(f.q || '').trim().toLowerCase();
+    const rows = (rep.rows || []).filter((r) => !q || [r.sourceCode, r.sourceName, r.targetCode, r.targetName, r.reference]
+      .some((v) => String(v || '').toLowerCase().includes(q)));
+
+    const filtry = `<div class="period-toolbar" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:4px 0 14px;">
+      <label class="field" style="margin:0;"><span>Od</span><input type="date" data-conv-from value="${esc(f.from)}"></label>
+      <label class="field" style="margin:0;"><span>Do</span><input type="date" data-conv-to value="${esc(f.to)}"></label>
+      <label class="field" style="margin:0;min-width:200px;"><span>Szukaj</span><input type="search" data-conv-q value="${esc(f.q)}" placeholder="kod, nazwa lub dokument"></label>
+      <button class="btn btn-ghost btn-sm" data-conv-apply>Zastosuj</button>
+      <button class="btn btn-ghost btn-sm" data-conv-reset>Wyczyść</button>
+      <button class="btn btn-ghost btn-sm" data-conv-csv style="margin-left:auto;">Eksportuj CSV</button>
+    </div>`;
+
+    // Podsumowanie liczymy z wierszy PO filtrze tekstowym (ten działa po stronie
+    // przeglądarki), żeby kafel zawsze zgadzał się z tym, co widać w tabeli.
+    const suma = {
+      operacji: new Set(rows.map((r) => r.operationId)).size,
+      sztuk: rows.reduce((a, r) => a + r.qty, 0),
+      wartosc: rows.reduce((a, r) => a + (r.value || 0), 0),
+      bezKosztu: rows.filter((r) => r.value == null).length
+    };
+    const kafle = `
+      <div class="valuation-banner" style="margin-bottom:14px;">
+        <span class="lbl">Przetworzeń: ${fmtInt(suma.operacji)} · pozycji: ${fmtInt(rows.length)} · sztuk: ${fmtInt(suma.sztuk)}</span>
+        <span class="val">${esc(fmtMoney(suma.wartosc))}</span>
+      </div>`;
+
+    const strzalka = (r) => `
+      <div style="display:flex;flex-direction:column;gap:2px;">
+        <span><span class="mono-cell">${esc(r.sourceCode)}</span> ${esc(r.sourceName)}</span>
+        <span style="color:var(--muted);font-size:12px;">↓ ${esc(r.targetCategory || 'gadżet')}</span>
+        <span><span class="mono-cell">${esc(r.targetCode)}</span> ${esc(r.targetName)}</span>
+      </div>`;
+
+    const tabela = rows.length ? tableHTML(
+      [{ t: 'Kiedy' }, { t: 'Z czego → na co' }, { t: 'Ilość', num: true }, { t: 'Koszt/szt.', num: true },
+       { t: 'Wartość', num: true }, { t: 'Dokument' }],
+      rows.map((r) => ({ cells: [
+        { v: fmtDay(r.when), cls: 'mut' },
+        { html: strzalka(r) },
+        { v: fmtInt(r.qty), cls: 'num' },
+        { html: r.unitCost == null ? '<span class="mut">—</span>' : esc(fmtMoney(r.unitCost)), cls: 'num' },
+        { html: r.value == null ? '<span class="mut">—</span>' : esc(fmtMoney(r.value)), cls: 'num' },
+        { html: `${esc(r.reference)}${r.imported ? ' <span class="chip chip-orange">Odoo</span>' : ''}`, cls: 'mut' }
+      ] }))
+    ) : emptyBlock('Brak przetworzeń', 'Nic nie zostało zmienione w gadżet w tym zakresie.');
+
+    const stopka = suma.bezKosztu
+      ? `<p style="margin:12px 0 0;font-size:12.5px;color:var(--muted);">${fmtInt(suma.bezKosztu)} pozycji bez kosztu jednostkowego — to dokumenty zaciągnięte z Odoo, które nie niosą wyceny konwersji.</p>`
+      : '';
+
+    state.mag.convRows = rows;
+    body.innerHTML = filtry + kafle + tabela + stopka;
+  }
+
+  function applyConversionFilters() {
+    const f = conversionsState();
+    const v = (sel) => { const el = $(sel); return el ? el.value : ''; };
+    f.from = v('[data-conv-from]');
+    f.to = v('[data-conv-to]');
+    f.q = v('[data-conv-q]');
+    renderConversionsReport();
+  }
+
+  function resetConversionFilters() {
+    state.mag.conv = { from: '', to: '', q: '' };
+    renderConversionsReport();
+  }
+
+  // CSV historii przetworzeń — do księgowości (kolumna kosztu pusta tam, gdzie
+  // dokument przyszedł z Odoo i wyceny konwersji po prostu nie ma).
+  function exportConversionsCSV() {
+    const rows = state.mag.convRows || [];
+    if (!rows.length) { toast('Nie ma czego eksportować.'); return; }
+    const head = ['Kiedy', 'Kod źródła', 'Nazwa źródła', 'Kod celu', 'Nazwa celu', 'Ilość', 'Koszt/szt.', 'Wartość', 'Dokument', 'Źródło'];
+    const esc2 = (v) => { const t = String(v == null ? '' : v); return /[",;\n]/.test(t) ? `"${t.replace(/"/g, '""')}"` : t; };
+    const linie = rows.map((r) => [
+      r.when ? new Date(r.when).toISOString().slice(0, 10) : '',
+      r.sourceCode, r.sourceName, r.targetCode, r.targetName, r.qty,
+      r.unitCost == null ? '' : r.unitCost, r.value == null ? '' : r.value,
+      r.reference, r.imported ? 'Odoo' : 'Zaplecze'
+    ].map(esc2).join(';'));
+    const blob = new Blob(['\ufeff' + [head.join(';'), ...linie].join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `przetworzenia-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(a.href);
   }
 
   // ---- Raport „Ruchy w okresie" (kategoria + zakres dat + ceny wg partii + eksport)
@@ -3095,7 +3211,7 @@
 
   // -------------------------------------------------------------- global events
   document.addEventListener('click', (e) => {
-    const t = e.target.closest('[data-go],[data-view],[data-sheet],[data-detail],[data-request],[data-transfer],[data-report],[data-return],[data-req-act],[data-req-cancel],[data-cmt-send],[data-notif-resolve],[data-sec-toggle],[data-rej-tab],[data-rej-csv],[data-user-new],[data-user-del],[data-user-offboard],[data-offb-finish],[data-close-drawer],[data-close-sheet],[data-soon],#sheetSubmit,[data-stop],[data-mag-tab],[data-mag-optab],[data-mag-report],[data-mag-op],[data-mag-csv],[data-mag-new-op],[data-mag-config-add],[data-op-addline],[data-op-delline],[data-op-save],[data-op-validate],[data-op-cancel],[data-op-reverse],[data-sup-edit],[data-sup-del],[data-loc-edit],[data-loc-del],[data-lic-new],[data-lic-detail],[data-lic-edit],[data-lic-del],[data-acc-tab],[data-acc-new],[data-acc-edit],[data-acc-del],[data-acc-bulk-apply],[data-idn-new],[data-idn-detail],[data-idn-edit],[data-idn-del],[data-onb-new],[data-onb-toggle],[data-onb-edit],[data-onb-del],[data-onb-tab],[data-onb-request],[data-onb-confirm],[data-onb-unconfirm],[data-onb-grant],[data-onb-revoke],[data-onb-start],[data-onb-finish],[data-theme-opt],[data-pref-toggle],[data-tw-new],[data-tw-edit],[data-tw-del],[data-twp-new],[data-twp-edit],[data-twp-del],[data-tw-return-mode],[data-ai-invoice],[data-ai-new],[data-ai-edit],[data-ai-transfer],[data-ai-discard],[data-ai-import],[data-ai-export],[data-rr-new],[data-rr-edit],[data-rr-del],[data-rr-replenish],[data-prod-new],[data-prod-edit],[data-prod-import],[data-batch-add],[data-batch-del],[data-prod-save],[data-health-recompute],[data-op-pdf],[data-dst-edit],[data-dst-del],[data-period-apply],[data-period-csv]');
+    const t = e.target.closest('[data-go],[data-view],[data-sheet],[data-detail],[data-request],[data-transfer],[data-report],[data-return],[data-req-act],[data-req-cancel],[data-cmt-send],[data-notif-resolve],[data-sec-toggle],[data-rej-tab],[data-rej-csv],[data-user-new],[data-user-del],[data-user-offboard],[data-offb-finish],[data-close-drawer],[data-close-sheet],[data-soon],#sheetSubmit,[data-stop],[data-mag-tab],[data-mag-optab],[data-mag-report],[data-mag-op],[data-mag-csv],[data-mag-new-op],[data-mag-config-add],[data-op-addline],[data-op-delline],[data-op-save],[data-op-validate],[data-op-cancel],[data-op-reverse],[data-sup-edit],[data-sup-del],[data-loc-edit],[data-loc-del],[data-lic-new],[data-lic-detail],[data-lic-edit],[data-lic-del],[data-acc-tab],[data-acc-new],[data-acc-edit],[data-acc-del],[data-acc-bulk-apply],[data-idn-new],[data-idn-detail],[data-idn-edit],[data-idn-del],[data-onb-new],[data-onb-toggle],[data-onb-edit],[data-onb-del],[data-onb-tab],[data-onb-request],[data-onb-confirm],[data-onb-unconfirm],[data-onb-grant],[data-onb-revoke],[data-onb-start],[data-onb-finish],[data-theme-opt],[data-pref-toggle],[data-tw-new],[data-tw-edit],[data-tw-del],[data-twp-new],[data-twp-edit],[data-twp-del],[data-tw-return-mode],[data-ai-invoice],[data-ai-new],[data-ai-edit],[data-ai-transfer],[data-ai-discard],[data-ai-import],[data-ai-export],[data-rr-new],[data-rr-edit],[data-rr-del],[data-rr-replenish],[data-prod-new],[data-prod-edit],[data-prod-import],[data-batch-add],[data-batch-del],[data-prod-save],[data-health-recompute],[data-op-pdf],[data-dst-edit],[data-dst-del],[data-period-apply],[data-period-csv],[data-conv-apply],[data-conv-reset],[data-conv-csv]');
     if (!t) return;
 
     if (t.hasAttribute('data-rr-new')) { openSheet('reorderRule', {}); return; }
@@ -3152,6 +3268,9 @@
     if (t.dataset.magOptab) { state.magOpType = t.dataset.magOptab; renderOperacje(); return; }
     if (t.dataset.magReport) { state.magReport = t.dataset.magReport; $$('[data-mag-report]').forEach((b) => b.classList.toggle('active', b === t)); renderReport(t.dataset.magReport); return; }
     if (t.hasAttribute('data-period-apply')) { applyPeriodFilters(); return; }
+    if (t.hasAttribute('data-conv-apply')) { applyConversionFilters(); return; }
+    if (t.hasAttribute('data-conv-reset')) { resetConversionFilters(); return; }
+    if (t.hasAttribute('data-conv-csv')) { exportConversionsCSV(); return; }
     if (t.hasAttribute('data-period-csv')) { exportPeriodCSV(); return; }
     if (t.hasAttribute('data-mag-op')) { openOpEditor(t.getAttribute('data-mag-op')); return; }
     if (t.hasAttribute('data-mag-csv')) { exportProductsCSV(); return; }
