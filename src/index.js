@@ -1033,12 +1033,25 @@ app.get('/warehouse/moves', requireAuth, requireWarehouseRead, async (req, res) 
   const itemCodes = [...new Set(moves.map(m => m.itemCode))];
   const items = itemCodes.length
     ? await db.collection(collections.items)
-        .find({ itemCode: { $in: itemCodes } }, { projection: { itemCode: 1, name: 1, category: 1 } })
+        .find({ itemCode: { $in: itemCodes } }, { projection: { itemCode: 1, name: 1, category: 1, unit: 1 } })
         .toArray()
     : [];
   const itemByCode = new Map(items.map(it => [it.itemCode, it]));
 
   // Magazyn = tylko kategorie magazynowe — odfiltrowujemy ruchy elektroniki.
+  // Odnośnik dokumentu przy ruchu: historia ma prowadzić do operacji, z której
+  // ruch powstał. Bez tego wiersz jest ślepy — widać „wydanie 120 szt.", ale nie
+  // wiadomo, którym dokumentem i do kogo.
+  const opIds = [...new Set(moves.map(m => m.operationId).filter(Boolean))];
+  const opById = new Map();
+  if (opIds.length) {
+    const ids = opIds.map(id => { try { return new ObjectId(String(id)); } catch { return null; } }).filter(Boolean);
+    const ops = ids.length
+      ? await db.collection(collections.stockOperations).find({ _id: { $in: ids } }, { projection: { reference: 1 } }).toArray()
+      : [];
+    for (const o of ops) opById.set(String(o._id), o.reference || '');
+  }
+
   res.json(moves.filter(m => isWarehouseCategory(itemByCode.get(m.itemCode)?.category)).map(m => {
     const from = m.fromLocationId ? locById.get(m.fromLocationId) : null;
     const to = m.toLocationId ? locById.get(m.toLocationId) : null;
@@ -1046,6 +1059,9 @@ app.get('/warehouse/moves', requireAuth, requireWarehouseRead, async (req, res) 
       id: String(m._id),
       itemCode: m.itemCode,
       itemName: itemByCode.get(m.itemCode)?.name || '',
+      unit: normalizeUnit(itemByCode.get(m.itemCode)?.unit),
+      operationId: m.operationId ? String(m.operationId) : null,
+      operationReference: m.operationId ? (opById.get(String(m.operationId)) || null) : null,
       fromName: from?.name || null,
       toName: to?.name || null,
       quantity: m.quantity,

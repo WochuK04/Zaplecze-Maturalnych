@@ -755,21 +755,31 @@
       }
     },
     quickProduct: {
-      eyebrow: 'Magazyn · Konwersja', title: 'Nowy produkt (cel konwersji)',
-      hint: 'Utwórz produkt magazynowy, na który przetwarzasz. Koszt przeniesie sama konwersja.', cta: 'Utwórz',
-      fields: () => `<div class="field-2">
+      eyebrow: 'Magazyn · Operacje',
+      title: (ctx) => (ctx.field === 'itemCode' ? 'Nowy produkt' : 'Nowy produkt (cel konwersji)'),
+      hint: (ctx) => (ctx.field === 'itemCode'
+        ? 'Kartoteka dla towaru, którego jeszcze nie ma w Magazynie. Stan i koszt dopisze samo przyjęcie.'
+        : 'Utwórz produkt magazynowy, na który przetwarzasz. Koszt przeniesie sama konwersja.'),
+      cta: 'Utwórz',
+      // Kategoria jako lista, nie wolny tekst: endpoint odrzuca wszystko spoza
+      // kategorii Magazynu, a literówka kończyła się błędem dopiero po wysłaniu.
+      fields: (ctx) => {
+        const domyslna = ctx.field === 'itemCode' ? 'Towar' : 'gadżet';
+        const kat = MAG_KATEGORIE.map((k) => `<option value="${esc(k)}"${k === domyslna ? ' selected' : ''}>${esc(k)}</option>`).join('');
+        return `<div class="field-2">
         <label class="field"><span>Nazwa *</span><input name="name" placeholder="np. Zestaw powitalny"></label>
-        <label class="field"><span>Kategoria</span><input name="category" value="Gadżet" placeholder="np. Gadżet"></label>
+        <label class="field"><span>Kategoria</span><select name="category">${kat}</select></label>
       </div>
-      <label class="field"><span>Jednostka</span>${unitSelect('name="unit"')}</label>`,
+      <label class="field"><span>Jednostka</span>${unitSelect('name="unit"')}</label>`;
+      },
       submit: async (data, ctx) => {
         if (!data.name) throw new Error('Podaj nazwę produktu.');
-        const res = await api('/warehouse/products', { method: 'POST', body: JSON.stringify({ name: data.name, category: data.category || 'Gadżet', unit: data.unit }) });
+        const res = await api('/warehouse/products', { method: 'POST', body: JSON.stringify({ name: data.name, category: data.category || 'Towar', unit: data.unit }) });
         state.mag.formData = state.mag.formData || { items: [] };
         (state.mag.formData.items = state.mag.formData.items || []).push({ itemCode: res.itemCode, name: res.name, category: res.category, unit: res.unit, onHand: 0, reserved: 0, available: 0 });
-        if (opEdit.lines[ctx.idx]) opEdit.lines[ctx.idx].targetItemCode = res.itemCode;
+        if (opEdit.lines[ctx.idx]) opEdit.lines[ctx.idx][ctx.field || 'targetItemCode'] = res.itemCode;
         renderOpLines();
-        toast('Utworzono produkt: ' + res.name);
+        toast('Utworzono produkt: ' + res.name + ' (' + res.itemCode + ')');
       }
     },
     magInvoice: {
@@ -820,6 +830,21 @@
           .push({ id: res.id, code: res.code, name: res.name, kind: res.kind });
         applyQuickHeaderPick(ctx.field, res.id, res.name);
         toast('Utworzono lokalizację: ' + res.name);
+      }
+    },
+    quickSupplier: {
+      eyebrow: 'Magazyn · Operacja', title: 'Nowy dostawca',
+      hint: 'Od kogo przyjmujemy towar. Trafi też do Konfiguracji.', cta: 'Utwórz',
+      fields: () => `
+        <label class="field"><span>Nazwa *</span><input name="name" placeholder="np. Rafael Sp. z o.o."></label>
+        <label class="field"><span>Kontakt</span><input name="contact" placeholder="e-mail / telefon"></label>`,
+      submit: async (data, ctx) => {
+        if (!data.name) throw new Error('Podaj nazwę dostawcy.');
+        const res = await api('/warehouse/suppliers', { method: 'POST', body: JSON.stringify({ name: data.name, contact: data.contact || '' }) });
+        state.mag.formData = state.mag.formData || {};
+        (state.mag.formData.suppliers = state.mag.formData.suppliers || []).push({ id: res.id, name: res.name });
+        applyQuickHeaderPick(ctx.field, res.id, res.name);
+        toast('Utworzono dostawcę: ' + res.name);
       }
     },
     quickDestination: {
@@ -1757,6 +1782,10 @@
   }
 
   // -------------------------------------------------------------- Magazyn
+  // Kategorie Magazynu — dokładnie te przyjmuje POST /warehouse/products
+  // (src/lib/categories.js). Lista, nie wolny tekst, żeby literówka nie kończyła
+  // się błędem dopiero po wysłaniu formularza.
+  const MAG_KATEGORIE = ['Towar', 'gadżet', 'opakowanie', 'sponsor'];
   const OP_STATE = { draft: 'Wersja robocza', ready: 'Gotowe', done: 'Zatwierdzono', cancelled: 'Anulowano' };
   const MOVE_KIND = { receipt: 'Przyjęcie', delivery: 'Wydanie', internal: 'Przesunięcie', scrap: 'Odpad', adjustment: 'Korekta', conversion: 'Konwersja', in: 'Przyjęcie', out: 'Wydanie' };
   const LOC_KIND = { view: 'Grupa', internal: 'Magazyn', employee: 'U pracownika', customer: 'Klienci', supplier: 'Dostawcy', transit: 'Tranzyt', inventory: 'Inwentaryzacja', scrap: 'Odpad' };
@@ -1950,7 +1979,7 @@
     // W selectach nagłówka doklejamy „＋ Nowa…" — jak „＋ Nowy produkt…" przy konwersji.
     // Planista nie musi wychodzić do Konfiguracji, żeby dopisać brakującą lokalizację.
     const locOpts = (sel) => optList(form.locations, (l) => l.id, (l) => l.name, sel) + '<option value="__new__">＋ Nowa lokalizacja…</option>';
-    const supOpts = (sel) => '<option value="">— brak —</option>' + optList(form.suppliers, (s) => s.id, (s) => s.name, sel);
+    const supOpts = (sel) => '<option value="">— brak —</option>' + optList(form.suppliers, (s) => s.id, (s) => s.name, sel) + '<option value="__new__">＋ Nowy dostawca…</option>';
     const dstOpts = (sel) => '<option value="">— brak —</option>' + optList(form.deliveryDestinations, (d) => d.id, (d) => d.name, sel) + '<option value="__new__">＋ Nowe miejsce dostawy…</option>';
     const partyField = t === 'receipt'
       ? `<label class="field"><span>Dostawca</span><select data-op-h="supplierId">${supOpts(op.supplierId)}</select></label>`
@@ -2052,7 +2081,8 @@
   // „＋ Nowa…" w selectach nagłówka. Po wyborze przywracamy poprzednią wartość i
   // otwieramy sheet — dzięki temu anulowanie nie zostawia selecta na „__new__".
   function bindQuickHeaderPickers() {
-    [['fromLocationId', 'quickLocation'], ['toLocationId', 'quickLocation'], ['destinationId', 'quickDestination']]
+    [['fromLocationId', 'quickLocation'], ['toLocationId', 'quickLocation'],
+     ['destinationId', 'quickDestination'], ['supplierId', 'quickSupplier']]
       .forEach(([field, sheet]) => {
         const sel = $(`[data-op-h="${field}"]`);
         if (!sel) return;
@@ -2098,7 +2128,7 @@
         ? `<input data-line-field="countedQty" data-idx="${i}" type="number" min="0" step="any" value="${l.countedQty != null ? l.countedQty : ''}" placeholder="policzono" style="width:90px;">${uTag}`
         : `<input data-line-field="quantity" data-idx="${i}" type="number" min="0" step="any" value="${l.quantity != null ? l.quantity : ''}" placeholder="ilość" style="width:80px;">${uTag}`;
       return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
-        <select data-line-field="itemCode" data-idx="${i}" style="flex:1;min-width:140px;">${itemOpts(l.itemCode, t === 'conversion')}</select>
+        <select data-line-field="itemCode" data-idx="${i}" style="flex:1;min-width:140px;">${itemOpts(l.itemCode, t === 'conversion', t === 'receipt')}</select>
         ${t === 'conversion' ? extra : ''}${qtyField}${t === 'receipt' ? extra : ''}
         <button class="x-btn" data-op-delline="${i}" style="width:32px;height:32px;flex-shrink:0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </div>`;
@@ -2107,19 +2137,24 @@
     $$('[data-line-field]').forEach((el) => { el.style.border = '1px solid var(--line-2)'; el.style.borderRadius = '9px'; el.style.padding = '9px 11px'; el.style.fontSize = '13.5px'; el.style.background = 'var(--surface)'; el.style.color = 'var(--ink)'; el.style.outline = 'none'; });
     // Konwersja: wybór „＋ Nowy produkt…" w celu → szybkie utworzenie produktu.
     $$('[data-line-field="targetItemCode"]', wrap).forEach((sel) => sel.addEventListener('change', () => {
-      if (sel.value === '__new__') { sel.value = ''; openQuickProduct(Number(sel.dataset.idx)); }
+      if (sel.value === '__new__') { sel.value = ''; openQuickProduct(Number(sel.dataset.idx), 'targetItemCode'); }
     }));
-    // Zmiana produktu zmienia jednostkę przy polu ilości — przerysuj pozycje.
+    // Przyjęcie: „＋ Nowy produkt…" zakłada kartotekę bez wychodzenia z dokumentu —
+    // przy dostawie regularnie przychodzi towar, którego jeszcze nie ma w bazie.
+    // Poza tym zmiana produktu zmienia jednostkę przy polu ilości, więc przerysowujemy.
     $$('[data-line-field="itemCode"]', wrap).forEach((sel) => sel.addEventListener('change', () => {
+      if (sel.value === '__new__') { sel.value = ''; openQuickProduct(Number(sel.dataset.idx), 'itemCode'); return; }
       readOpLinesFromDOM(); renderOpLines();
     }));
   }
 
   // Szybkie utworzenie produktu-celu konwersji (POST /warehouse/products), po czym
   // wpina go w tę pozycję i odświeża listy. Odpowiednik „__new__" z v1.
-  function openQuickProduct(idx) {
+  // `field` mówi, którą stronę pozycji uzupełniamy: `itemCode` (produkt przyjmowany)
+  // albo `targetItemCode` (cel konwersji).
+  function openQuickProduct(idx, field = 'targetItemCode') {
     readOpLinesFromDOM(); // zachowaj bieżące pozycje przed re-renderem
-    openSheet('quickProduct', { idx });
+    openSheet('quickProduct', { idx, field });
   }
 
   function readOpLinesFromDOM() {
@@ -2293,16 +2328,24 @@
     const val = prodEdit.batches.reduce((a, b) => a + (Number(b.qty) || 0) * (Number(b.unitPrice) || 0), 0);
     const t = $('[data-batch-total]'); if (t) t.textContent = `Łącznie: ${fmtQty(total, prodEdit.unit || 'szt.')} · wartość ${fmtMoney(val)}`;
   }
+  // Wiersz historii prowadzi do dokumentu, z którego ruch powstał — inaczej widać
+  // „wydanie 120 szt.", ale nie wiadomo, którym dokumentem i do kogo. Ruchy bez
+  // operacji (stan otwarcia, stare migracje) zostają nieklikalne.
   function loadProdHistory(code) {
     const box = $('[data-prod-history]'); if (!box) return;
     api('/warehouse/moves?itemCode=' + encodeURIComponent(code) + '&limit=200').then((moves) => {
       if (!moves.length) { box.innerHTML = '<div class="eq-sub">Brak ruchów.</div>'; return; }
       box.innerHTML = tableHTML(
-        [{ t: 'Data' }, { t: 'Z' }, { t: 'Do' }, { t: 'Ilość', num: true }, { t: 'Rodzaj' }],
-        moves.map((m) => ({ cells: [
-          { v: fmtDate(m.doneAt), cls: 'mut' }, { v: m.fromName || '—', cls: 'mut' }, { v: m.toName || '—', cls: 'mut' },
-          { v: fmtInt(m.quantity), cls: 'num' }, { v: MOVE_KIND[m.kind] || m.kind || '—', cls: 'mut' }
-        ] }))
+        [{ t: 'Data' }, { t: 'Dokument' }, { t: 'Z' }, { t: 'Do' }, { t: 'Ilość', num: true }, { t: 'Rodzaj' }],
+        moves.map((m) => ({
+          click: m.operationId || null,
+          cells: [
+            { v: fmtDate(m.doneAt), cls: 'mut' },
+            { v: m.operationReference || '—', cls: m.operationReference ? 'mono-cell' : 'mut' },
+            { v: m.fromName || '—', cls: 'mut' }, { v: m.toName || '—', cls: 'mut' },
+            { v: fmtQty(m.quantity, m.unit), cls: 'num' }, { v: MOVE_KIND[m.kind] || m.kind || '—', cls: 'mut' }
+          ]
+        }))
       );
     }).catch(() => { box.innerHTML = '<div class="eq-sub">Nie udało się wczytać historii.</div>'; });
   }
@@ -2346,11 +2389,16 @@
       } else if (id === 'moves') {
         const rows = await api('/warehouse/moves?limit=200');
         body.innerHTML = rows.length ? tableHTML(
-          [{ t: 'Kiedy' }, { t: 'Kod' }, { t: 'Ruch' }, { t: 'Ilość', num: true }, { t: 'Lokalizacja' }],
-          rows.map((m) => ({ cells: [
-            { v: fmtDay(m.doneAt), cls: 'mut' }, { v: m.itemCode, cls: 'mono-cell' }, { v: MOVE_KIND[m.kind] || m.kind },
-            { v: fmtInt(m.quantity), cls: 'num' }, { v: m.toName || m.fromName || '—', cls: 'mut' }
-          ] }))
+          [{ t: 'Kiedy' }, { t: 'Dokument' }, { t: 'Kod' }, { t: 'Ruch' }, { t: 'Ilość', num: true }, { t: 'Lokalizacja' }],
+          rows.map((m) => ({
+            click: m.operationId || null,
+            cells: [
+              { v: fmtDay(m.doneAt), cls: 'mut' },
+              { v: m.operationReference || '—', cls: m.operationReference ? 'mono-cell' : 'mut' },
+              { v: m.itemCode, cls: 'mono-cell' }, { v: MOVE_KIND[m.kind] || m.kind },
+              { v: fmtQty(m.quantity, m.unit), cls: 'num' }, { v: m.toName || m.fromName || '—', cls: 'mut' }
+            ]
+          }))
         ) : emptyBlock('Brak ruchów', '');
       } else if (id === 'conversions') {
         await renderConversionsReport();
