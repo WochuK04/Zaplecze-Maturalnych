@@ -26,7 +26,7 @@ import { personAccessHoldings } from './lib/access-queries.js';
 import { seedAccessMapDefaults } from './lib/access-seed.js';
 import { extractPdfText, extractItemsFromText, extractWarehouseItemsFromText } from './invoice-extract.js';
 import { matchInvoiceLines, normalizeInvoiceName } from './lib/invoice-match.js';
-import { replayStockAt, endOfDay, movePriceBatches, itemUnitCost } from './stock-history.js';
+import { replayStockAt, endOfDay, movePriceBatches, assignFifoPrices, newFifoQueue, takeFifoLayers } from './stock-history.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -1113,7 +1113,7 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
         .toArray()
     : [];
   const itemByCode = new Map(items.map(it => [it.itemCode, it]));
-  const kosztKartoteki = new Map(items.map(it => [it.itemCode, itemUnitCost(it)]));
+  const partieWgKodu = new Map(items.map(it => [it.itemCode, it.priceBatches || []]));
 
   // Tylko ruchy towarów magazynowych (jak w historii ruchów).
   let warehouseMoves = moves.filter(m => isWarehouseCategory(itemByCode.get(m.itemCode)?.category));
@@ -1154,8 +1154,7 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
     const item = itemByCode.get(m.itemCode);
 
     const op = m.operationId ? opById.get(String(m.operationId)) : null;
-    const { batches: priceBatches, source: priceSource, unpriced } =
-      movePriceBatches(op, m, { unitCost: kosztKartoteki.get(m.itemCode) ?? null });
+    const { batches: priceBatches, source: priceSource, unpriced } = movePriceBatches(op, m);
 
     return {
       id: String(m._id),
@@ -1171,10 +1170,14 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
       note: m.note || '',
       doneAt: m.doneAt || m.createdAt || null,
       priceBatches,
-      priceSource,
+      source: priceSource,
       unpriced
     };
   });
+
+  // Ruchom bez ceny w dokumencie (historia z Odoo) dokładamy ją z partii kartoteki —
+  // FIFO, chronologicznie, ze wspólnej kolejki per produkt.
+  assignFifoPrices(rows, partieWgKodu);
 
   res.json({
     from: from.toISOString(),
@@ -1185,7 +1188,7 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
     // Ile wierszy wyceniono wtórnie (koszt kartoteki zamiast ceny z dokumentu) i ile
     // zostało bez ceny mimo wszystko. UI mówi to wprost: wycena wtórna jest przybliżeniem
     // i księgowość musi wiedzieć, na którą liczbę patrzy.
-    estimatedRows: rows.filter(r => r.priceSource === 'kartoteka').length,
+    estimatedRows: rows.filter(r => r.source === 'fifo').length,
     unpricedRows: rows.filter(r => r.unpriced).length,
     truncated: warehouseMoves.length > LIMIT
   });
@@ -1831,10 +1834,21 @@ async function loadOperationDetail(db, id) {
     ? await db.collection(collections.items).find({ itemCode: { $in: codes } }, { projection: { itemCode: 1, name: 1, unit: 1, priceBatches: 1 } }).toArray()
     : [];
   const nameByCode = new Map(items.map(i => [i.itemCode, i.name]));
-  // Koszt kartoteki — wyłącznie do wydruku dokumentów, które własnych cen nie mają
-  // (przyjęcia odtworzone z historii Odoo). NIE wchodzi do `unitPrice`, bo tym polem
-  // edytor prefilluje formularz i zapis podstawiłby wycenę w miejsce ceny z faktury.
-  const kosztByCode = new Map(items.map(i => [i.itemCode, itemUnitCost(i)]));
+  // Wycena pozycji, których dokument nie ma czym wycenić (przyjęcia odtworzone
+  // z historii Odoo): FIFO z partii kartoteki, jedna kolejka na produkt, żeby dwie
+  // pozycje tego samego towaru nie zjadły dwa razy tej samej warstwy. Wynik NIE
+  // wchodzi do `unitPrice`, bo tym polem edytor prefilluje formularz i zapis
+  // podstawiłby wycenę w miejsce prawdziwej ceny z faktury.
+  const kolejki = new Map(items.map(i => [i.itemCode, newFifoQueue(i.priceBatches)]));
+  const wycenaFifo = (kod, qty) => {
+    const q = kolejki.get(kod);
+    if (!q || q.ostatniaCena == null) return null;
+    const layers = takeFifoLayers(q, qty);
+    const ilosc = layers.reduce((s, l) => s + l.qty, 0);
+    if (ilosc <= 0) return null;
+    const wartosc = layers.reduce((s, l) => s + l.qty * l.unitPrice, 0);
+    return Math.round((wartosc / ilosc) * 100) / 100;
+  };
   // Jednostkę niesie sam dokument, a nie cache produktów w przeglądarce: ten trzyma
   // tylko kartoteki aktywne, więc pozycje na kartotekach zarchiwizowanych (krówki
   // z 2025) traciły „kg" i wyświetlały się jako goła liczba.
@@ -1870,7 +1884,7 @@ async function loadOperationDetail(db, id) {
       targetName: l.targetItemCode ? (nameByCode.get(l.targetItemCode) || '') : null,
       quantity: l.quantity ?? null,
       unitPrice: l.unitPrice ?? null,
-      fallbackUnitPrice: l.unitPrice == null ? (kosztByCode.get(l.itemCode) ?? null) : null,
+      fallbackUnitPrice: l.unitPrice == null ? wycenaFifo(l.itemCode, l.quantity) : null,
       countedQty: l.countedQty ?? null,
       locationId: l.locationId ? String(l.locationId) : null,
       locationName: l.locationId ? (locById.get(String(l.locationId))?.name || null) : null,

@@ -2697,13 +2697,13 @@
     return (pb || []).reduce((s, b) => s + (Number(b.qty) || 0) * (Number(b.unitPrice) || 0), 0);
   }
   // Komórka „Cena wg partii": jedna partia → cena; kilka partii → rozbicie linia po linii.
-  // Cena wyceniona wtórnie (koszt kartoteki, bo dokument z importu Odoo swojej nie miał)
-  // dostaje gwiazdkę — jest prawdziwa, ale to koszt dzisiejszy, nie ten z dnia ruchu,
-  // i księgowość musi widzieć różnicę między jednym a drugim.
-  const GWIAZDKA = '<span class="mut" title="Wycena kosztem kartoteki z Odoo — dokument odtworzony z historii nie niósł własnej ceny.">*</span>';
+  // Cena policzona z partii kartoteki (bo dokument z importu Odoo swojej nie niósł)
+  // dostaje gwiazdkę. Warstwy są prawdziwe, ale opisują stan dzisiejszy, nie ten
+  // z dnia ruchu — księgowość musi widzieć różnicę między jednym a drugim.
+  const GWIAZDKA = '<span class="mut" title="Wycena FIFO z partii kartoteki — dokument odtworzony z historii Odoo nie niósł własnych cen.">*</span>';
   function batchesCell(pb, source) {
     if (!pb || !pb.length) return { html: '<span class="mut">—</span>', cls: 'num' };
-    const gw = source === 'kartoteka' ? GWIAZDKA : '';
+    const gw = source === 'fifo' ? GWIAZDKA : '';
     if (pb.length === 1) return { html: esc(fmtMoney(pb[0].unitPrice)) + gw, cls: 'num' };
     const lines = pb.map((b) => `<div style="white-space:nowrap;">${fmtInt(b.qty)} × ${esc(fmtMoney(b.unitPrice))}</div>`).join('');
     return { html: `<div style="display:flex;flex-direction:column;gap:2px;align-items:flex-end;" title="Ruch pokrywany z ${pb.length} partii cenowych">${lines}</div>`, cls: 'num' };
@@ -2746,10 +2746,10 @@
         { v: m.itemCategory || '—', cls: 'mut' },
         { v: MOVE_KIND[m.kind] || m.kind },
         { v: fmtInt(m.quantity), cls: 'num' },
-        batchesCell(m.priceBatches, m.priceSource),
+        batchesCell(m.priceBatches, m.source),
         { v: m.priceBatches && m.priceBatches.length ? fmtMoney(batchesValue(m.priceBatches)) : '—', cls: m.priceBatches && m.priceBatches.length ? 'num' : 'num mut' }
       ] }))
-    ) + (rep.estimatedRows ? `<p class="sub" style="margin:10px 0 0;">* ${fmtInt(rep.estimatedRows)} z ${fmtInt(rows.length)} ruchów wyceniono <strong>kosztem kartoteki z Odoo</strong> — to dokumenty odtworzone z historii, które nie niosą własnej ceny. Koszt jest bieżący, nie z dnia ruchu, więc wartość jest przybliżona. Ruchy z dokumentów zaplecza mają ceny z partii FIFO.</p>` : '')
+    ) + (rep.estimatedRows ? `<p class="sub" style="margin:10px 0 0;">* ${fmtInt(rep.estimatedRows)} z ${fmtInt(rows.length)} ruchów wyceniono <strong>FIFO z partii kartoteki</strong> — to dokumenty odtworzone z historii Odoo, które nie niosą własnych cen. Partie opisują stan dzisiejszy, nie ten z dnia ruchu, więc wartość jest przybliżona. Ruchy z dokumentów zaplecza mają ceny wprost z dokumentu.</p>` : '')
       + (rep.unpricedRows ? `<p class="sub" style="margin:6px 0 0;">${fmtInt(rep.unpricedRows)} ruchów zostało bez ceny — ich kartoteki nie mają żadnej partii cenowej.</p>` : '')
       + (rep.truncated || rows.length > 300 ? `<p class="sub" style="margin:10px 0 0;">Pokazano pierwsze 300 ruchów. Pełny zakres pobierz przez „Eksportuj CSV".</p>` : '')
       : emptyBlock('Brak ruchów w okresie', p.from || p.to ? 'Zmień zakres dat lub kategorię.' : 'Domyślnie ostatnie 30 dni.');
@@ -2774,8 +2774,8 @@
     // przyszła z dokumentu, czy jest wyceną wtórną po koszcie kartoteki. Filtrem w
     // arkuszu da się jedno od drugiego oddzielić.
     const header = ['Data', 'Kod', 'Nazwa', 'Kategoria', 'Ruch', 'Ilość', 'Cena jedn.', 'Wartość', 'Z lokalizacji', 'Do lokalizacji', 'Źródło ceny'];
-    const zrodlo = (m) => m.priceSource === 'dokument' ? 'dokument'
-      : m.priceSource === 'kartoteka' ? 'koszt kartoteki (Odoo)'
+    const zrodlo = (m) => m.source === 'dokument' ? 'dokument'
+      : m.source === 'fifo' ? 'FIFO z partii kartoteki'
       : 'brak ceny';
     const out = [header];
     rows.forEach((m) => {

@@ -46,10 +46,11 @@ export function buildLinesTable(op) {
     const rows = lines.map(l => {
       const qty = Number(l.quantity) || 0;
       // Cena z dokumentu ma pierwszeństwo. Gdy jej nie ma — bo dokument odtworzyliśmy
-      // z historii Odoo, a ta nie niesie kosztu w pozycjach — wyceniamy kosztem
-      // kartoteki, tym samym, na którym stoi wycena stanu. Gwiazdka i nota pod tabelą
-      // mówią, że to wycena, nie kwota z faktury. Zera nie drukujemy nigdy: „0,00 zł"
-      // znaczyłoby, że towar przyszedł za darmo.
+      // z historii Odoo, a ta nie niesie kosztu w pozycjach — wchodzi wycena FIFO
+      // z partii kartoteki (liczy ją wołający). Kolumna jest jedna, więc pozycja
+      // rozłożona na dwie warstwy pokazuje cenę wypadkową dokładnie tych warstw.
+      // Gwiazdka i nota pod tabelą mówią, że to wycena, nie kwota z faktury. Zera nie
+      // drukujemy nigdy: „0,00 zł" znaczyłoby, że towar przyszedł za darmo.
       const zDokumentu = l.unitPrice != null && Number.isFinite(Number(l.unitPrice));
       const zKartoteki = !zDokumentu && l.fallbackUnitPrice != null && Number.isFinite(Number(l.fallbackUnitPrice));
       if (!zDokumentu && !zKartoteki) return [l.itemCode || '', l.itemName || '', fmtIlosc(qty), '—', '—'];
@@ -207,14 +208,14 @@ export function renderOperationPdf(doc, op) {
   }
 
   // Podsumowanie przyjęcia. Nazwa sumy musi odpowiadać temu, co w niej siedzi:
-  // „wartość zakupu" ma znaczyć kwotę z dokumentu. Gdy wszystko policzono kosztem
-  // kartoteki, to jest wycena, nie zakup — i etykieta ma to mówić, bo ten papier
-  // czyta księgowość. Zera nie drukujemy nigdy: znaczyłoby „za darmo".
+  // „wartość zakupu" ma znaczyć kwotę z dokumentu. Gdy wszystko policzono z partii,
+  // to jest wycena, nie zakup — i etykieta ma to mówić, bo ten papier czyta
+  // księgowość. Zera nie drukujemy nigdy: znaczyłoby „za darmo".
   if (op.type === 'receipt') {
     let y = endY + 6;
     const maCokolwiek = pricedLines > 0 || estimatedLines > 0;
     const etykieta = !maCokolwiek ? 'Razem: brak danych'
-      : pricedLines === 0 ? `Razem (wycena wg kosztu kartoteki): ${fmtZl(totalValue)}`
+      : pricedLines === 0 ? `Razem (wycena FIFO z partii): ${fmtZl(totalValue)}`
       : `Razem (wartość zakupu): ${fmtZl(totalValue)}`;
     doc.font('Bold').fontSize(11).fillColor('#000000')
       .text(etykieta, left, y, { width: right - left, align: 'right' });
@@ -224,7 +225,7 @@ export function renderOperationPdf(doc, op) {
       const ile = pricedLines === 0
         ? 'Dokument nie niósł własnych cen'
         : `${estimatedLines} z ${rows.length} pozycji`;
-      noty.push(`* ${ile} — wyceniono kosztem kartoteki z Odoo. Koszt jest bieżący, nie z dnia przyjęcia.`);
+      noty.push(`* ${ile} — wyceniono FIFO z partii cenowych kartoteki. Partie opisują stan bieżący, nie ten z dnia przyjęcia.`);
     }
     if (unpricedLines > 0) {
       noty.push(`${unpricedLines} z ${rows.length} pozycji bez ceny — kartoteka nie ma żadnej partii cenowej.`);
