@@ -11,8 +11,11 @@
     "migrate:uzywaja": "node scripts/migrate-uzywaja.js",
     "import:csv": "node scripts/import-csv.js",
     "test": "node --test --test-force-exit",
-    "test:unit": "node --test test/stock.*.test.js",
-    "test:int": "node --test --test-force-exit test/warehouse.*.int.test.js"
+    "test:unit": "node --test test/stock.*.test.js test/odoo.*.test.js",
+    "test:int": "node --test --test-force-exit test/warehouse.*.int.test.js",
+    "odoo:pobierz": "node scripts/odoo-pobierz.mjs",
+    "odoo:import": "node scripts/odoo-import.mjs",
+    "odoo:historia": "node scripts/odoo-historia.mjs"
   },
   "dependencies": {
     "connect-mongo": "^5.1.0",

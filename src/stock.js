@@ -863,6 +863,12 @@ export async function reverseOperation(db, operationId, actorEmail) {
   const op = await ops.findOne({ _id: new ObjectId(String(operationId)) });
   if (!op) throw new Error('Operacja nie istnieje');
   if (op.state !== 'done') throw new Error('Cofnąć można tylko wykonaną operację');
+  // Dokumenty zaciągnięte z Odoo to ZAPIS zdarzeń, które wydarzyły się poza zapleczem.
+  // Nie mają snapshotu partii cenowych, więc cofnięcie odtworzyłoby ruchy, ale nie
+  // koszty — zostawiłoby stan rozjechany z wyceną. Historię się poprawia w Odoo.
+  if (op.importedFrom === 'odoo') {
+    throw new Error('To dokument zaciągnięty z historii Odoo — nie można go cofnąć.');
+  }
 
   const opId = String(op._id);
   const stockMoves = db.collection(collections.stockMoves);
@@ -1318,6 +1324,76 @@ export function summarizeMovesByKind(moves) {
 // wydany towar, nie bieżące ryzyko. Próg domyślny 20 zł; porównanie ostre (> próg),
 // bo dokładnie 20 zł jeszcze mieści się w limicie. Czysta agregacja nad listą pozycji
 // (wołający zawęża do kategorii Magazynu).
+// Historia przetransferowań (Raportowanie → „Przetworzenia"): co, kiedy i z czego
+// zostało przerobione na gadżet. Buduje się z operacji typu `conversion` — tych
+// zrobionych w zapleczu i tych odtworzonych z Odoo (importedFrom: 'odoo').
+//
+// Koszt jednostkowy bierzemy z `conversionDetail.producedUnit` — to koszt, który
+// konwersja realnie przeniosła z partii towaru (applyConversionBatches). Operacje
+// zaimportowane z historii go nie mają (Odoo nie trzyma tego w eksporcie ruchów),
+// więc wychodzą z `unitCost: null` i UI pokazuje tam kreskę zamiast zmyślonej kwoty.
+//
+// Czysta funkcja nad listą operacji i mapą produktów — wołający dostarcza dane.
+export function computeConversionHistory(operations, itemsByCode = new Map()) {
+  const nazwa = (kod) => itemsByCode.get(kod)?.name || kod || '';
+  const kategoria = (kod) => itemsByCode.get(kod)?.category || '';
+  const rows = [];
+
+  for (const op of Array.isArray(operations) ? operations : []) {
+    if (op.type !== 'conversion' || op.state !== 'done') continue;
+    const detail = new Map(
+      (Array.isArray(op.conversionDetail) ? op.conversionDetail : [])
+        .map(d => [`${d.sourceCode}>${d.targetCode}`, d])
+    );
+
+    for (const ln of Array.isArray(op.lines) ? op.lines : []) {
+      const sourceCode = String(ln.itemCode || '');
+      const targetCode = String(ln.targetItemCode || '');
+      if (!sourceCode || !targetCode) continue;
+      const qty = Number(ln.quantity) || 0;
+      const d = detail.get(`${sourceCode}>${targetCode}`) || null;
+      const unitCost = d && Number.isFinite(Number(d.producedUnit)) ? Number(d.producedUnit) : null;
+
+      rows.push({
+        operationId: String(op._id || ''),
+        reference: op.reference || '',
+        when: op.doneAt || op.updatedAt || null,
+        sourceCode,
+        sourceName: nazwa(sourceCode),
+        sourceCategory: kategoria(sourceCode),
+        targetCode,
+        targetName: nazwa(targetCode),
+        targetCategory: kategoria(targetCode),
+        qty,
+        unitCost,
+        value: unitCost == null ? null : Math.round(unitCost * qty * 100) / 100,
+        actorEmail: op.doneByEmail || op.createdByEmail || '',
+        sourceDocument: op.sourceDocument || '',
+        imported: op.importedFrom === 'odoo'
+      });
+    }
+  }
+
+  rows.sort((a, b) => new Date(b.when || 0) - new Date(a.when || 0));
+
+  const suma = rows.reduce((acc, r) => ({
+    sztuk: acc.sztuk + r.qty,
+    wartosc: acc.wartosc + (r.value || 0),
+    zWyceną: acc.zWyceną + (r.value == null ? 0 : 1)
+  }), { sztuk: 0, wartosc: 0, zWyceną: 0 });
+
+  return {
+    rows,
+    total: {
+      operations: new Set(rows.map(r => r.operationId)).size,
+      lines: rows.length,
+      qty: suma.sztuk,
+      value: Math.round(suma.wartosc * 100) / 100,
+      linesWithoutCost: rows.length - suma.zWyceną
+    }
+  };
+}
+
 export const GIFT_VAT_THRESHOLD = 20;
 
 // Partia pochodzi z konwersji towar→gadżet (nota nadana w applyConversionBatches).

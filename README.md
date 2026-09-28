@@ -98,9 +98,31 @@ Sesje przechowywane są w kolekcji `sessions`; `connect-mongo` **współdzieli**
 | `npm run import:excel` | Import listy sprzętu z pliku Excel |
 | `npm run backfill:emails` | Backfill maili osób |
 | `npm run rename:codes` | Zmiana kodów produktów |
+| `npm run odoo:pobierz` | Pobranie z Odoo (produkty z kosztem, ruchy, przekazy) — tylko odczyt |
+| `npm run odoo:import` | Import bazy produktów z Odoo ze scaleniem partii (domyślnie na sucho) |
+| `npm run odoo:historia` | Zaciągnięcie historii ruchów i przetworzeń z Odoo (domyślnie na sucho) |
 | `npm test` | Wszystkie testy (wymaga MongoDB; ustaw też dummy `GOOGLE_*`) |
 | `npm run test:unit` | Testy jednostkowe `stock.*` (bez MongoDB) |
 | `npm run test:int` | Testy integracyjne magazynu (wymaga MongoDB) |
+
+## Synchronizacja z Odoo
+
+Odoo (`maturalni.odoo.com`) jest aktywnym magazynem firmy, więc cały ruch w tę stronę jest **wyłącznie odczytem** — klient JSON-RPC ma twardą białą listę metod (`scripts/odoo/rpc.mjs`) i odrzuca wszystko inne, zanim cokolwiek wyśle.
+
+Klucz API trzymaj w `Materiały do gitignore/odoo-creds.json` (katalog jest w `.gitignore`); zakładasz go w Odoo: awatar → Mój profil → Bezpieczeństwo konta → Nowy klucz API. Klucze bywają ważne 7 dni.
+
+```bash
+node scripts/odoo-pobierz.mjs --all     # produkty (z kosztem), ruchy, przekazy → Materiały do gitignore/odoo/
+node scripts/odoo-import.mjs            # próba na sucho: co się scali i w jakie partie
+node scripts/odoo-import.mjs --zapisz   # produkty + partie cenowe
+node scripts/odoo-historia.mjs --zapisz # ruchy, przekazy i przetworzenia towar→gadżet
+```
+
+Bez klucza oba importy przyjmują ścieżki do ręcznych eksportów `.xlsx` z Odoo (`product.template`, `stock.move.line`, `stock.picking`). Eksport `.xlsx` **nie zawiera kosztu** — dołóż w widoku eksportu kolumnę „Koszt" albo używaj RPC, inaczej partie wejdą po 0 zł.
+
+**Co się scala, a co nie.** Kartoteki o tej samej nazwie i tej samej kategorii (`G039` + `G046` „Arkusz polski e8") to jeden produkt kupiony w transzach — scalamy je, a każda kartoteka zostaje osobną partią cenową. Para Towar↔gadżet o tej samej nazwie (`T003` + `G060`) to **nie** duplikat, tylko ślad przetworzenia towaru w gadżet; te zostają osobno, bo inaczej znika historia przetworzeń i raport „prezenty ≤20 zł". Kody wchłonięte lądują w `items.mergedCodes` i są kaskadowo przepisane w ruchach, stanie i operacjach.
+
+**Historia przetworzeń.** Odoo nie ma dokumentu „przetworzenie" — magazyn robi to dwiema korektami stanu (minus na kartotece towaru, plus na kartotece gadżetu chwilę później). `odoo-historia.mjs` paruje je w operacje typu `conversion`, widoczne w Magazyn → Raportowanie → **Przetworzenia**. Dokumenty z importu są oznaczone `importedFrom: 'odoo'` i nie da się ich cofnąć — to zapis zdarzeń, nie operacja do odwracania.
 
 ## Testy i CI
 
