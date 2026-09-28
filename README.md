@@ -158,11 +158,15 @@ Bramka (`requireWarehouseAccess`) jest wpięta na prefiks tras — `/warehouse`,
 Magazyn i sprzęt dzielą jedną kolekcję `items`, a numeracja Odoo nie wie o istnieniu zaplecza — `T003` to w Odoo „Egzaminatorium matematyka", a kiedyś było u nas „Statywem lampowym". Dlatego dwa światy mają rozłączne serie:
 
 - **Magazyn** trzyma kody z Odoo (`G039`, `T003`, `O011`, `S001`). Nie renumerujemy ich, bo parytet z Odoo musi przeżyć każdy kolejny import.
-- **Sprzęt** ma prefiks kategorii + trzycyfrowy numer: `AS014` (Akcesoria), `AU007` (Audio), `K003` (Kamery), `L011` (Lampy), `M006` (Monitory), `PC005` (Laptop), `R002` (Roll-up), `P001` (Prompter), `STA001` (Statywy), `ST001` (Stream), `KOM001` (Komputer), `ZAK001` (Zakup), `ZDR001` (Zdrowie).
+- **Sprzęt** ma schemat `PREFIKS-SUFIKS` z `src/lib/item-code.js`: cztery pierwsze litery kategorii i generowany sufiks — `AKCE-MQTBGLJ5`, `KAME-MQTBFUTM`, `LAPT-MQZ1QHHS`. Tego samego używa aplikacja przy zakładaniu kartoteki i przy zmianie kategorii, więc **reguła musi być jedna**: kod nadany poza schematem i tak zostanie kiedyś przez aplikację przemianowany.
 
-`scripts/kody-sprzetu.mjs` normalizuje kartoteki, które odstają — kolidujące z Odoo, śmieciowe (`DUPA14-45`), generowane automatycznie (`AKCE-MQTBGLJ5`) i z prefiksem nie tej kategorii. Reszty nie tyka, żeby nie przedrukowywać poprawnych etykiet. Zmiana idzie przez `cascadeItemCodeRename`, więc ruchy, stany, wypożyczenia i dokumenty jadą razem z kartoteką, a `qrCodeValue` aktualizuje się tylko wtedy, gdy trzymał stary kod.
+Część ewidencji sprzętu ma jeszcze numerację z ręcznych importów (`AS046`, `K004`, `PC005`). Normalizacja czeka na kolejny pełny import — patrz [docs/import-odoo-checklista.md](docs/import-odoo-checklista.md), krok 6.
 
-Skrypt zawsze zapisuje mapowanie stary→nowy do `Materiały do gitignore/` (CSV dla Excela i JSON) — także przy próbie na sucho.
+`scripts/kody-sprzetu.mjs` normalizuje kartoteki, które odstają od schematu — kolidujące z Odoo, śmieciowe (`DUPA14-45`), generowane automatycznie (`AKCE-MQTBGLJ5`) i z prefiksem nie tej kategorii. Reszty nie tyka, żeby nie przedrukowywać poprawnych etykiet. Zmiana idzie przez `cascadeItemCodeRename`, więc ruchy, stany, wypożyczenia i dokumenty jadą razem z kartoteką, a `qrCodeValue` aktualizuje się tylko wtedy, gdy trzymał stary kod.
+
+Skrypt zawsze zapisuje mapowanie stary→nowy do `Materiały do gitignore/` (CSV dla Excela i JSON) — także przy próbie na sucho. Przełącznik `--przywroc=<plik-mapowania.json>` oddaje kartotece jej **pierwotny** kod zamiast losować nowy; przydaje się, gdy poprzednia migracja nadpisała kod, który może nadal wisieć na etykiecie.
+
+Pełna procedura importu i normalizacji: [docs/import-odoo-checklista.md](docs/import-odoo-checklista.md).
 
 ## Testy i CI
 

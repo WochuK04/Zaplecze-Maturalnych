@@ -1,28 +1,29 @@
-// Ujednolicenie kodów kartotek SPRZĘTU + mapowanie stary → nowy dla księgowości.
+// Ujednolicenie kodów kartotek SPRZĘTU do schematu aplikacji + mapowanie
+// stary → nowy dla księgowości.
 //
-// Schemat: PREFIKS KATEGORII + trzycyfrowy numer (AS014, K007, STA003). Prefiksy
-// biorą się z tego, co w bazie już dominuje — nie wymyślamy od zera, żeby nie
-// przedrukowywać etykiet, które i tak są poprawne.
+// Schemat jest jeden i mieszka w `src/lib/item-code.js`: PREFIKS-SUFIKS, gdzie
+// prefiks to cztery pierwsze litery kategorii („Akcesoria" → `AKCE-MQTBGLJ5`).
+// Tego samego używa aplikacja przy zakładaniu kartoteki i przy zmianie kategorii,
+// więc kod nadany ręcznie poza tym schematem i tak zostanie kiedyś przez nią
+// przemianowany — lepiej zrobić to raz, świadomie.
 //
-// Przenumerowujemy TYLKO kartoteki, które odstają:
-//   • kolidujące z numeracją Odoo (Statywy siedzą na T001–T005, a `T003` to
-//     w Odoo „Egzaminatorium matematyka" — jedna kolekcja `items`, dwa światy);
-//   • kody śmieciowe (DUPA, DUPA14-45);
-//   • kody generowane automatycznie (AKCE-MQTBGLJ5, LAPT-MQZ1QHHS);
-//   • kartoteki z prefiksem innej kategorii (lampa z prefiksem akcesoriów).
+// ODTWARZANIE ORYGINAŁÓW. Wcześniejsza wersja tego skryptu normalizowała kody
+// w drugą stronę (`AKCE-MQ9LIJT0` → `AS046`), co było pomyłką. Podanie tamtego
+// pliku mapowania przez `--przywroc=` sprawia, że kartoteki wracają do swoich
+// pierwotnych kodów, zamiast dostawać świeżo wylosowane. To istotne: ich etykiety
+// i kody QR mogą nadal nosić oryginał.
 //
-// Magazyn zostaje przy kodach z Odoo (G039, T003, O011) i tego NIE ruszamy —
+// Magazyn zostaje przy kodach z Odoo (`G039`, `T003`, `O011`) i tego NIE ruszamy —
 // parytet z Odoo musi przeżyć każdy kolejny import.
 //
-// Zmiana kodu idzie przez `cascadeItemCodeRename`, więc ruchy, stany, wypożyczenia,
-// wnioski i dokumenty operacji jadą razem z kartoteką. `qrCodeValue` aktualizujemy
-// tylko wtedy, gdy trzymał stary kod.
+// Zmiana idzie przez `cascadeItemCodeRename`, więc ruchy, stany, wypożyczenia
+// i dokumenty jadą razem z kartoteką. `qrCodeValue` aktualizujemy tylko wtedy,
+// gdy trzymał stary kod.
 //
 // Użycie:
-//   node scripts/kody-sprzetu.mjs            # próba na sucho + plik mapowania
-//   node scripts/kody-sprzetu.mjs --zapisz
-//
-// Mapowanie ląduje w „Materiały do gitignore/" jako .csv (Excel) i .json.
+//   node scripts/kody-sprzetu.mjs                                   # na sucho
+//   node scripts/kody-sprzetu.mjs --przywroc=mapowanie-kodow-sprzetu-2026-09-28.json
+//   node scripts/kody-sprzetu.mjs --przywroc=… --zapisz
 
 import dotenv from 'dotenv';
 import fs from 'node:fs';
@@ -32,92 +33,76 @@ import { connectToDatabase, closeDb } from '../src/db.js';
 import { collections } from '../src/schema.js';
 import { cascadeItemCodeRename } from '../src/stock.js';
 import { isWarehouseCategory } from '../src/lib/categories.js';
+import { itemCodePrefix, itemCodeSuffix, matchesScheme } from '../src/lib/item-code.js';
 
 const tutaj = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(tutaj, '../.env') });
 
-const ZAPISZ = process.argv.includes('--zapisz');
+const args = process.argv.slice(2);
+const ZAPISZ = args.includes('--zapisz');
+const PRZYWROC = (args.find((a) => a.startsWith('--przywroc=')) || '').slice(11);
 
-// Jedna kategoria — jeden prefiks. Kategorii spoza tej mapy nie ruszamy.
-const PREFIKS = {
-  'Akcesoria': 'AS',
-  'Audio': 'AU',
-  'Kamery': 'K',
-  'Lampy': 'L',
-  'Laptop': 'PC',
-  'Monitory': 'M',
-  'Roll-up': 'R',
-  'Prompter': 'P',
-  'Statywy': 'STA',
-  'Stream': 'ST',
-  'Komputer': 'KOM',
-  'Zakup': 'ZAK',
-  'Zdrowie': 'ZDR'
-};
+const KATALOG = path.join(process.cwd(), 'Materiały do gitignore');
 
-const SMIECIOWY = /DUPA/i;
-const GENEROWANY = /^[A-Z]{3,5}-[A-Z0-9]{8,}$/i;
+// Poprzednie mapowanie: nowyKod → staryKod. Pozwala oddać kartotece jej pierwotny
+// kod zamiast losować kolejny.
+const oryginaly = new Map();
+let sciezkaPrzywrocenia = null;
+if (PRZYWROC) {
+  sciezkaPrzywrocenia = path.resolve(path.isAbsolute(PRZYWROC) ? PRZYWROC : path.join(KATALOG, path.basename(PRZYWROC)));
+  for (const m of JSON.parse(fs.readFileSync(sciezkaPrzywrocenia, 'utf8'))) {
+    if (m.nowyKod && m.staryKod) oryginaly.set(m.nowyKod, m.staryKod);
+  }
+}
 
 const db = await connectToDatabase();
 const items = db.collection(collections.items);
 
 const wszystkie = await items.find({}, { projection: { itemCode: 1, category: 1, name: 1, quantity: 1, qrCodeValue: 1 } }).toArray();
 const sprzet = wszystkie.filter((i) => !isWarehouseCategory(i.category));
-const kodyZajete = new Set(wszystkie.map((i) => String(i.itemCode).toUpperCase()));
+const zajete = new Set(wszystkie.map((i) => String(i.itemCode).toUpperCase()));
 
-// Kody, których używa Odoo — sprzęt nie ma prawa na nich siedzieć.
+// Kody z Odoo są zarezerwowane — sprzęt nie ma prawa na nich usiąść.
 let kodyOdoo = new Set();
 try {
-  const plik = path.join(process.cwd(), 'Materiały do gitignore', 'odoo', 'produkty.json');
+  const plik = path.join(KATALOG, 'odoo', 'produkty.json');
   kodyOdoo = new Set(JSON.parse(fs.readFileSync(plik, 'utf8')).filter((p) => p.kod).map((p) => String(p.kod).toUpperCase()));
-} catch { /* brak pobrania z Odoo — kolizji nie sprawdzamy, reszta reguł działa */ }
+} catch { /* brak pobrania z Odoo — kolizji nie sprawdzamy */ }
 
-const pasuje = (kod, prefiks) => new RegExp(`^${prefiks}\\d+$`, 'i').test(kod);
+const wolny = (kod) => kod && !zajete.has(kod.toUpperCase()) && !kodyOdoo.has(kod.toUpperCase());
 
-function powod(i) {
-  const kod = String(i.itemCode);
-  const prefiks = PREFIKS[i.category];
-  if (!prefiks) return null;
-  if (kodyOdoo.has(kod.toUpperCase())) return 'kolizja z numeracją Odoo';
-  if (SMIECIOWY.test(kod)) return 'kod śmieciowy';
-  if (GENEROWANY.test(kod)) return 'kod generowany automatycznie';
-  if (!pasuje(kod, prefiks)) return `prefiks nie pasuje do kategorii (oczekiwany ${prefiks})`;
-  return null;
-}
-
-// Numeracja startuje za najwyższym zajętym numerem w serii, żeby nie wejść
-// na kod, który ktoś ma już na etykiecie.
-const licznik = new Map();
-for (const [kategoria, prefiks] of Object.entries(PREFIKS)) {
-  const max = sprzet
-    .filter((i) => pasuje(String(i.itemCode), prefiks))
-    .map((i) => Number(String(i.itemCode).slice(prefiks.length)))
-    .filter((n) => Number.isFinite(n))
-    .reduce((a, b) => Math.max(a, b), 0);
-  licznik.set(kategoria, max);
-}
-
-const nastepny = (kategoria) => {
-  const prefiks = PREFIKS[kategoria];
-  let n = licznik.get(kategoria) || 0;
-  let kod;
-  do { kod = `${prefiks}${String(++n).padStart(3, '0')}`; } while (kodyZajete.has(kod.toUpperCase()));
-  licznik.set(kategoria, n);
-  kodyZajete.add(kod.toUpperCase());
-  return kod;
+let licznik = 0;
+const nowyKod = (kategoria) => {
+  for (let i = 0; i < 8; i += 1) {
+    const kandydat = `${itemCodePrefix(kategoria)}-${itemCodeSuffix(String(licznik++))}`;
+    if (wolny(kandydat)) { zajete.add(kandydat.toUpperCase()); return kandydat; }
+  }
+  const awaryjny = `${itemCodePrefix(kategoria)}-${itemCodeSuffix(`${licznik++}X`)}`;
+  zajete.add(awaryjny.toUpperCase());
+  return awaryjny;
 };
 
 const mapowanie = [];
 for (const i of sprzet.sort((a, b) => String(a.category).localeCompare(String(b.category), 'pl') || String(a.itemCode).localeCompare(String(b.itemCode)))) {
-  const p = powod(i);
-  if (!p) continue;
+  const kod = String(i.itemCode);
+  const kolidujeZOdoo = kodyOdoo.has(kod.toUpperCase());
+  if (matchesScheme(kod, i.category) && !kolidujeZOdoo) continue;
+
+  // Najpierw próbujemy oddać kartotece jej pierwotny kod — o ile trzymał się
+  // schematu i nikt go w międzyczasie nie zajął.
+  const oryginal = oryginaly.get(kod);
+  const przywrocony = oryginal && matchesScheme(oryginal, i.category) && wolny(oryginal) ? oryginal : null;
+  if (przywrocony) zajete.add(przywrocony.toUpperCase());
+
   mapowanie.push({
-    staryKod: i.itemCode,
-    nowyKod: nastepny(i.category),
+    staryKod: kod,
+    nowyKod: przywrocony || nowyKod(i.category),
     kategoria: i.category,
     nazwa: i.name,
     ilosc: i.quantity ?? 0,
-    powod: p
+    powod: kolidujeZOdoo ? 'kolizja z numeracją Odoo'
+      : przywrocony ? 'przywrócony kod pierwotny'
+        : 'kod poza schematem aplikacji'
   });
 }
 
@@ -131,32 +116,35 @@ if (ZAPISZ) {
   }
 }
 
-// Plik dla księgowości — CSV z BOM (Excel poprawnie czyta polskie znaki) i JSON.
-const katalog = path.join(process.cwd(), 'Materiały do gitignore');
-fs.mkdirSync(katalog, { recursive: true });
-const stempel = new Date().toISOString().slice(0, 10);
+// CSV z BOM (Excel poprawnie czyta polskie znaki) + JSON do dalszego przetwarzania.
+fs.mkdirSync(KATALOG, { recursive: true });
+// Znacznik z godziną, nie samą datą: plik wyjściowy nie może nadpisać pliku
+// podanego w `--przywroc`, a przy tej samej nazwie właśnie to się działo.
+const stempel = new Date().toISOString().slice(0, 16).replace('T', '-').replace(':', '');
 const esc = (v) => { const s = String(v ?? ''); return /[",;\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-const naglowki = ['staryKod', 'nowyKod', 'kategoria', 'nazwa', 'ilosc', 'powod'];
-const csv = '﻿' + [naglowki.join(';'), ...mapowanie.map((m) => naglowki.map((k) => esc(m[k])).join(';'))].join('\n');
-const plikCsv = path.join(katalog, `mapowanie-kodow-sprzetu-${stempel}.csv`);
-const plikJson = path.join(katalog, `mapowanie-kodow-sprzetu-${stempel}.json`);
-fs.writeFileSync(plikCsv, csv);
+const nag = ['staryKod', 'nowyKod', 'kategoria', 'nazwa', 'ilosc', 'powod'];
+const plikCsv = path.join(KATALOG, `mapowanie-kodow-sprzetu-${stempel}.csv`);
+const plikJson = plikCsv.replace('.csv', '.json');
+// Twarda blokada: plik wyjściowy nie może być tym, z którego przywracamy kody.
+// Przy nazwie opartej o samą datę skrypt kasował własne źródło w trakcie działania.
+if (sciezkaPrzywrocenia && [plikCsv, plikJson].some((f) => path.resolve(f) === sciezkaPrzywrocenia)) {
+  console.error(`PRZERWANE: plik wyjściowy nadpisałby źródło przywracania (${sciezkaPrzywrocenia}).`);
+  await closeDb();
+  process.exit(1);
+}
+fs.writeFileSync(plikCsv, '﻿' + [nag.join(';'), ...mapowanie.map((m) => nag.map((k) => esc(m[k])).join(';'))].join('\n'));
 fs.writeFileSync(plikJson, JSON.stringify(mapowanie, null, 2));
-
-const wgKategorii = {};
-for (const m of mapowanie) wgKategorii[m.kategoria] = (wgKategorii[m.kategoria] || 0) + 1;
 
 console.log(JSON.stringify({
   baza: process.env.MONGO_DB_NAME || process.env.DB_NAME,
   naSucho: !ZAPISZ,
   kartotekSprzetu: sprzet.length,
-  doPrzenumerowania: mapowanie.length,
-  bezZmian: sprzet.length - mapowanie.length,
-  wgKategorii,
+  doZmiany: mapowanie.length,
+  juzWSchemacie: sprzet.length - mapowanie.length,
   wgPowodu: mapowanie.reduce((a, m) => ({ ...a, [m.powod]: (a[m.powod] || 0) + 1 }), {}),
-  mapowanie: { csv: plikCsv, json: plikJson }
+  mapowanie: plikCsv
 }, null, 2));
 
-if (!ZAPISZ) console.error('\nPRÓBA NA SUCHO — kody nie zostały zmienione. Plik mapowania i tak powstał, do przejrzenia.');
+if (!ZAPISZ) console.error('\nPRÓBA NA SUCHO — kody nie zostały zmienione. Plik mapowania i tak powstał.');
 
 await closeDb();
