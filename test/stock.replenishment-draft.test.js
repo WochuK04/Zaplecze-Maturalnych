@@ -36,6 +36,16 @@ test('below=true, ale toOrder ≤ 0 → nie tworzymy pustej linii', () => {
 
 test('toOrder ułamkowy jest zaokrąglany w dół do pełnych sztuk', () => {
   assert.equal(replenishmentDraft(row({ toOrder: 7.9 })).line.quantity, 7);
+  assert.equal(replenishmentDraft(row({ toOrder: 7.9, unit: 'szt.' })).line.quantity, 7);
+  assert.equal(replenishmentDraft(row({ toOrder: 7.9, unit: 'opak.' })).line.quantity, 7);
+});
+
+test('toOrder na kg/l/m zostaje ułamkowy — „zamów 7,9 kg" jest poprawne', () => {
+  assert.equal(replenishmentDraft(row({ toOrder: 7.9, unit: 'kg' })).line.quantity, 7.9);
+  assert.equal(replenishmentDraft(row({ toOrder: 0.5, unit: 'l' })).line.quantity, 0.5);
+  // Poniżej pełnej sztuki: dla kg zamawiamy, dla sztuk nie ma czego zamówić.
+  assert.equal(replenishmentDraft(row({ toOrder: 0.4, unit: 'kg' })).line.quantity, 0.4);
+  assert.equal(replenishmentDraft(row({ toOrder: 0.4, unit: 'szt.' })).reason, 'zero');
 });
 
 test('brak wiersza / śmieci nie wybuchają', () => {

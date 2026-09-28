@@ -16,6 +16,7 @@ import { MANAGER_MAP } from './manager-map.js';
 import { licenseView } from './lib/licenses.js';
 import { registerLicenseRoutes } from './routes/licenses.js';
 import { normalizeItemCode } from './lib/item-code.js';
+import { UNITS, normalizeUnit, normalizeQty, normalizeQtyOrZero } from './lib/units.js';
 import { WAREHOUSE_ONLY_CATEGORIES, isWarehouseCategory } from './lib/categories.js';
 import { registerTurboWeekendRoutes } from './routes/turbo-weekends.js';
 import { registerEntityRoutes } from './routes/entities.js';
@@ -129,7 +130,7 @@ function normalizePriceBatches(batches, now = new Date()) {
   if (!Array.isArray(batches)) return [];
   return batches
     .map(b => ({
-      qty: Math.max(0, Math.floor(Number(b?.qty) || 0)),
+      qty: normalizeQtyOrZero(b?.qty),
       unitPrice: Math.max(0, Math.round((Number(b?.unitPrice) || 0) * 100) / 100),
       note: String(b?.note || '').trim(),
       addedAt: b?.addedAt ? new Date(b.addedAt) : now
@@ -701,7 +702,7 @@ app.get('/warehouse/stock', requireAuth, requireWarehouseRead, async (req, res) 
   const items = itemCodes.length
     ? await db.collection(collections.items)
         .find({ itemCode: { $in: itemCodes } },
-          { projection: { itemCode: 1, name: 1, category: 1, conditionStatus: 1 } })
+          { projection: { itemCode: 1, name: 1, category: 1, conditionStatus: 1, unit: 1 } })
         .toArray()
     : [];
   const itemByCode = new Map(items.map(it => [it.itemCode, it]));
@@ -719,6 +720,7 @@ app.get('/warehouse/stock', requireAuth, requireWarehouseRead, async (req, res) 
       name: it.name || '',
       category: it.category || '',
       conditionStatus: it.conditionStatus || '',
+      unit: normalizeUnit(it.unit),
       locationId: quant.locationId,
       locationName: loc.name || '',
       locationCode: loc.code || '',
@@ -1195,7 +1197,7 @@ app.get('/warehouse/products', requireAuth, requireWarehouseRead, async (_req, r
   const db = await getDb();
   const all = await db.collection(collections.items)
     .find({ isActive: { $ne: false } },
-      { projection: { itemCode: 1, name: 1, category: 1, brand: 1, model: 1, notes: 1, quantity: 1, priceBatches: 1 } })
+      { projection: { itemCode: 1, name: 1, category: 1, brand: 1, model: 1, notes: 1, unit: 1, quantity: 1, priceBatches: 1 } })
     .toArray();
 
   const products = all
@@ -1212,6 +1214,7 @@ app.get('/warehouse/products', requireAuth, requireWarehouseRead, async (_req, r
         brand: it.brand || '',
         model: it.model || '',
         notes: it.notes || '',
+        unit: normalizeUnit(it.unit),
         quantity: batches.length ? batchQty : (Number(it.quantity) || 0),
         batchCount: batches.length,
         totalValue,
@@ -1369,6 +1372,7 @@ app.post('/warehouse/products', requireAuth, requireAdmin, async (req, res) => {
     itemCode: await generatePurchaseItemCode(db, category),
     category,
     name,
+    unit: normalizeUnit(req.body.unit),
     details: '',
     quantity: 0,
     currentLocation: 'Magazyn',
@@ -1389,7 +1393,7 @@ app.post('/warehouse/products', requireAuth, requireAdmin, async (req, res) => {
     actorEmail: req.user.email, actionType: 'item_created', entityType: 'item',
     entityId: String(insertedId), payload: { itemCode: doc.itemCode, source: 'warehouse-receipt' }, createdAt: now
   });
-  res.status(201).json({ id: String(insertedId), itemCode: doc.itemCode, name: doc.name, category: doc.category });
+  res.status(201).json({ id: String(insertedId), itemCode: doc.itemCode, name: doc.name, category: doc.category, unit: doc.unit });
 });
 
 // Import wsadowy produktów Magazynu z CSV (UI: Magazyn → Produkty → Importuj CSV).
@@ -1430,10 +1434,11 @@ app.post('/warehouse/products/bulk', requireAuth, requireAdmin, async (req, res)
     }
     if (itemCode) seenInFile.add(itemCode);
 
-    const quantity = Math.max(0, Math.floor(Number(row?.quantity) || 0));
+    const quantity = normalizeQtyOrZero(row?.quantity);
     const unitPrice = Math.max(0, Math.round((Number(row?.unitPrice) || 0) * 100) / 100);
     valid.push({
       rowNumber, itemCode, name, category, quantity, unitPrice,
+      unit: normalizeUnit(row?.unit),
       brand: String(row?.brand || '').trim(),
       model: String(row?.model || '').trim(),
       notes: String(row?.notes || '').trim()
@@ -1647,7 +1652,7 @@ function normalizeOperationLines(type, rawLines) {
         return {
           itemCode,
           locationId: l.locationId ? String(l.locationId) : null,
-          countedQty: Math.max(0, Number(l.countedQty) || 0),
+          countedQty: normalizeQtyOrZero(l.countedQty),
           lot: l.lot ? String(l.lot) : null
         };
       }
@@ -1655,9 +1660,9 @@ function normalizeOperationLines(type, rawLines) {
       if (type === 'conversion') {
         const targetItemCode = normalizeItemCode(l.targetItemCode || '');
         if (!targetItemCode) return null;
-        return { itemCode, targetItemCode, quantity: Math.max(1, Number(l.quantity) || 1) };
+        return { itemCode, targetItemCode, quantity: normalizeQty(l.quantity) };
       }
-      const line = { itemCode, quantity: Math.max(1, Number(l.quantity) || 1), lot: l.lot ? String(l.lot) : null };
+      const line = { itemCode, quantity: normalizeQty(l.quantity), lot: l.lot ? String(l.lot) : null };
       // Przyjęcie: cena zakupu per pozycja (zł). Zatwierdzenie dopisze partię cenową.
       if (type === 'receipt') line.unitPrice = Math.max(0, Math.round((Number(l.unitPrice) || 0) * 100) / 100);
       return line;
@@ -1704,7 +1709,7 @@ app.get('/warehouse/form-data', requireAuth, requireWarehouseRead, async (_req, 
     .find({ isActive: { $ne: false }, kind: { $in: OPERATION_LOC_KINDS } })
     .sort({ code: 1 }).toArray();
   const allItems = await db.collection(collections.items)
-    .find({ isActive: { $ne: false } }, { projection: { itemCode: 1, name: 1, category: 1 } })
+    .find({ isActive: { $ne: false } }, { projection: { itemCode: 1, name: 1, category: 1, unit: 1 } })
     .sort({ name: 1 }).toArray();
   // Operacje magazynowe dotyczą tylko kategorii magazynowych (nie elektroniki).
   const items = allItems.filter(it => isWarehouseCategory(it.category));
@@ -1732,11 +1737,12 @@ app.get('/warehouse/form-data', requireAuth, requireWarehouseRead, async (_req, 
     items: items.map(it => {
       const onHand = onHandByCode.get(it.itemCode) || 0;
       const reserved = reservedAt(it.itemCode);
-      return { itemCode: it.itemCode, name: it.name || '', category: it.category || '', onHand, reserved, available: Math.max(0, onHand - reserved) };
+      return { itemCode: it.itemCode, name: it.name || '', category: it.category || '', unit: normalizeUnit(it.unit), onHand, reserved, available: Math.max(0, onHand - reserved) };
     }),
     suppliers: suppliers.map(s => ({ id: String(s._id), name: s.name || '' })),
     deliveryDestinations: destinations.map(d => ({ id: String(d._id), name: d.name || '' })),
-    types: OPERATION_TYPES
+    types: OPERATION_TYPES,
+    units: UNITS
   });
 });
 
@@ -4182,6 +4188,7 @@ app.patch('/admin/items/:id', requireAuth, requireAdmin, async (req, res) => {
     thumbnailUrl,
     brand,
     model,
+    unit,
     qrCodeValue,
     tags,
     serialNumber,
@@ -4201,7 +4208,7 @@ app.patch('/admin/items/:id', requireAuth, requireAdmin, async (req, res) => {
   if (category !== undefined) update.category = String(category).trim();
   if (name !== undefined) update.name = String(name).trim();
   if (details !== undefined) update.details = String(details || '').trim();
-  if (quantity !== undefined) update.quantity = Math.max(1, Number(quantity) || 1);
+  if (quantity !== undefined) update.quantity = normalizeQty(quantity);
   if (currentLocation !== undefined) update.currentLocation = String(currentLocation).trim();
   if (conditionStatus !== undefined) update.conditionStatus = String(conditionStatus).trim();
   if (operationalStatus !== undefined) update.operationalStatus = String(operationalStatus).trim();
@@ -4210,6 +4217,7 @@ app.patch('/admin/items/:id', requireAuth, requireAdmin, async (req, res) => {
   if (thumbnailUrl !== undefined) update.thumbnailUrl = String(thumbnailUrl || '').trim();
   if (brand !== undefined) update.brand = String(brand || '').trim();
   if (model !== undefined) update.model = String(model || '').trim();
+  if (unit !== undefined) update.unit = normalizeUnit(unit);
   if (qrCodeValue !== undefined) update.qrCodeValue = String(qrCodeValue || '').trim();
   if (tags !== undefined) update.tags = normalizeTags(tags);
   if (serialNumber !== undefined) update.serialNumber = String(serialNumber || '').trim();

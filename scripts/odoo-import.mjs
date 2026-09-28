@@ -112,6 +112,7 @@ for (const p of produkty) {
   const pola = {
     name: p.name,
     category: p.category,
+    unit: p.unit,
     quantity: p.quantity,
     priceBatches: p.priceBatches,
     mergedCodes: p.mergedCodes,
@@ -128,7 +129,7 @@ for (const p of produkty) {
       zKartotek: [p.itemCode, ...p.mergedCodes],
       dokumentyWchloniete: doWchloniecia.map((d) => d.itemCode),
       ilosc: p.quantity,
-      partie: p.priceBatches.map((b) => `${b.qty} szt. × ${b.unitPrice} zł (${b.note})`)
+      partie: p.priceBatches.map((b) => `${b.qty} ${p.unit} × ${b.unitPrice} zł (${b.note})`)
     });
   }
   raport.wchlonietoDokumentow += doWchloniecia.length;
