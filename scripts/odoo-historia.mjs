@@ -30,6 +30,7 @@ import { seedStandardLocations, recomputeQuants, refreshItemCache } from '../src
 import { mergeProducts, normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, KOD_KOLIZJI } from '../src/odoo.js';
 import { isWarehouseCategory } from '../src/lib/categories.js';
 import { DEFAULT_UNIT } from '../src/lib/units.js';
+import { zastosujPoprawki, kodZNazwy, mnoznikDlaKodu } from '../src/odoo-poprawki.js';
 import { wczytaj } from './odoo/zrodlo.mjs';
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.env') });
@@ -57,7 +58,9 @@ const teraz = new Date();
 // --- mapa kodów: kod kartoteki Odoo → kod produktu w zapleczu po scaleniu --------
 // Ta sama filtracja co w `odoo-import.mjs` — inaczej mapa kodów rozjechałaby się
 // z tym, co realnie wylądowało w `items`.
-const wszystkieProdukty = mergeProducts(tylkoAktywne(zrodlo.produkty), { teraz });
+// Te same poprawki co w `odoo-import.mjs` — mapa kodów musi widzieć dokładnie to,
+// co wylądowało w `items`.
+const wszystkieProdukty = mergeProducts(tylkoAktywne(zastosujPoprawki(zrodlo.produkty).kartoteki), { teraz });
 const pominiete = new Set(findDuplicateCodes(wszystkieProdukty).flatMap((k) => k.przegrywaja));
 const bezDuplikatow = wszystkieProdukty.filter((p) => !pominiete.has(p));
 const naWiodacy = new Map();
@@ -96,8 +99,16 @@ const linie = wszystkieLinie
   .filter((l) => l.status === 'Wykonano' || l.status === 'done')
   .filter((l) => l.when instanceof Date && !Number.isNaN(l.when.getTime()));
 
-const bezKodu = linie.filter((l) => !l.kod);
-const zKodem = linie.filter((l) => l.kod).map((l) => ({ ...l, itemCode: kanon(l.kod) }));
+// Linie bez kodu produktu: Odoo podaje wtedy samą nazwę. Kartoteki, którym kod
+// nadaliśmy sami (taśmy), da się po tej nazwie rozpoznać — reszta zostaje pominięta.
+const zOdzyskanym = linie.map((l) => (l.kod ? l : { ...l, kod: kodZNazwy(l.nazwa) }));
+const bezKodu = zOdzyskanym.filter((l) => !l.kod);
+// Ilość przeliczamy tym samym mnożnikiem co stan kartoteki, inaczej rejestr
+// rozjedzie się z ilością (O010: ruchy w sztukach, kartoteka w kilogramach).
+const zKodem = zOdzyskanym.filter((l) => l.kod).map((l) => {
+  const m = mnoznikDlaKodu(l.kod);
+  return { ...l, itemCode: kanon(l.kod), qty: m === 1 ? l.qty : Math.round(l.qty * m * 1000) / 1000 };
+});
 
 const { conversions, pozostaleKorekty } = detectConversions(zKodem);
 // Przetworzenia mapujemy na kody po scaleniu dopiero tutaj — parowanie musi widzieć

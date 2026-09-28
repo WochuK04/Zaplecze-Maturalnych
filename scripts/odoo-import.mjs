@@ -29,6 +29,7 @@ import { collections, ensureIndexes } from '../src/schema.js';
 import { cascadeItemCodeRename, recomputeQuants } from '../src/stock.js';
 import { mergeProducts, findConversionCandidates, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions } from '../src/odoo.js';
 import { isWarehouseCategory } from '../src/lib/categories.js';
+import { zastosujPoprawki } from '../src/odoo-poprawki.js';
 import { wczytaj } from './odoo/zrodlo.mjs';
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.env') });
@@ -39,7 +40,11 @@ const sciezki = args.filter((a) => !a.startsWith('--'));
 
 const zrodlo = wczytaj(sciezki);
 const teraz = new Date();
-const kartoteki = tylkoAktywne(zrodlo.produkty);
+// Poprawki do danych z Odoo (src/odoo-poprawki.js) idą PRZED scalaniem: nadają kod
+// kartotekom bez odnośnika i przeliczają jednostki, żeby scalanie widziało już
+// spójne dane i nie trzeba było dorabiać wyjątków w samej logice.
+const poprawki = zastosujPoprawki(zrodlo.produkty);
+const kartoteki = tylkoAktywne(poprawki.kartoteki);
 const wszystkie = mergeProducts(kartoteki, { teraz });
 const bezKodu = kartoteki.filter((p) => !String(p.kod ?? '').trim());
 
@@ -79,6 +84,7 @@ const raport = {
   utworzono: [],
   zaktualizowano: [],
   kartotekZarchiwizowanych: zrodlo.produkty.length - kartoteki.length,
+  poprawki: { zastosowane: poprawki.zastosowane, pominiete: poprawki.pominiete, nietrafione: poprawki.nietrafione },
   pominietoBezKodu: bezKodu.map((p) => ({ nazwa: p.nazwa, kategoria: p.kategoria, stan: p.stan })),
   kolizjeZeSprzetem: [],
   konfliktyKodow: konflikty.map((k) => ({
@@ -201,6 +207,11 @@ raport.podsumowanie = {
 
 console.log(JSON.stringify(raport, null, 2));
 if (!ZAPISZ) console.error('\nPRÓBA NA SUCHO — nic nie zapisano. Dodaj --zapisz, żeby wykonać.');
+if (poprawki.nietrafione.length) {
+  console.error('\nUWAGA: poprawki z src/odoo-poprawki.js, które w NIC nie trafiły:');
+  for (const n of poprawki.nietrafione) console.error('  ' + n);
+  console.error('Zwykle znaczy to, że w Odoo zmieniono nazwę albo produkt dostał wreszcie odnośnik.');
+}
 if (kolizje.length) {
   console.error(`\nUWAGA: ${kolizje.length} kartotek Odoo ma kod zajęty przez sprzęt — dostały własny kod z prefiksem MAG-.`);
   for (const k of kolizje) console.error(`  ${k.odooCode} → ${k.itemCode}  („${k.name}")`);

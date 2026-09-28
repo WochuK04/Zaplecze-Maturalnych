@@ -101,6 +101,7 @@ Sesje przechowywane są w kolekcji `sessions`; `connect-mongo` **współdzieli**
 | `npm run odoo:pobierz` | Pobranie z Odoo (produkty z kosztem, ruchy, przekazy) — tylko odczyt |
 | `npm run odoo:import` | Import bazy produktów z Odoo ze scaleniem partii (domyślnie na sucho) |
 | `npm run odoo:historia` | Zaciągnięcie historii ruchów i przetworzeń z Odoo (domyślnie na sucho) |
+| `npm run kody:mapowanie` | Tabela „stary kod → nowy kod" dla księgowości (sprzęt + magazyn) |
 | `npm run kody:sprzet` | Ujednolicenie kodów sprzętu + mapowanie stary→nowy (domyślnie na sucho) |
 | `npm run odoo:od-zera` | Wyczyszczenie magazynu i pełny import z Odoo jedną komendą (domyślnie na sucho) |
 | `npm test` | Wszystkie testy (wymaga MongoDB; ustaw też dummy `GOOGLE_*`) |
@@ -135,6 +136,8 @@ Operacja jest nieodwracalna, więc: domyślnie chodzi **na sucho**, zapis wymaga
 Zakres `magazyn` (domyślny) zdejmuje wyłącznie kartoteki kategorii magazynowych i ich rejestr — sprzęt, użytkownicy, wypożyczenia, licencje, mapa dostępów i wyjazdy zostają. Uwaga: `stockMoves`/`quants` są wspólne dla magazynu i sprzętu, więc kasowane są **po kodzie produktu**, nie w całości. Zakres `wszystko` czyści całą bazę poza `users` i `sessions` — bez tego nikt by się nie zalogował, żeby to naprawić.
 
 **Co się scala, a co nie.** Kartoteki o tej samej nazwie i tej samej kategorii (`G039` + `G046` „Arkusz polski e8") to jeden produkt kupiony w transzach — scalamy je, a każda kartoteka zostaje osobną partią cenową. Para Towar↔gadżet o tej samej nazwie (`T003` + `G060`) to **nie** duplikat, tylko ślad przetworzenia towaru w gadżet; te zostają osobno, bo inaczej znika historia przetworzeń i raport „prezenty ≤20 zł". Kody wchłonięte lądują w `items.mergedCodes` i są kaskadowo przepisane w ruchach, stanie i operacjach.
+
+**Poprawki do Odoo.** `src/odoo-poprawki.js` trzyma decyzje, których Odoo o sobie nie wie: kody dla trzech kartotek bez odnośnika wewnętrznego (taśmy → `O018`/`O019`, szklana kula → moduł Sprzęt) i przelicznik jednostki dla `O010` (1 szt. = 10 kg, więc daje się scalić z `O011`). To **plaster** — każdy wpis istnieje, bo czegoś brakuje po stronie Odoo, i po uzupełnieniu tam trzeba go stąd usunąć. Dopasowanie po nazwie jest kruche, więc import wypisuje wpisy, które w nic nie trafiły, zamiast milczeć.
 
 **Jednostki miary.** Odoo prowadzi część asortymentu w kilogramach (krówki, wypełniacz do paczek) i ma tam stany ułamkowe — 0,5 kg. Import przenosi jednostkę na `items.unit` i NIE zaokrągla ilości: zaokrąglanie gubiło towar, przez co bilans `T016` wychodził 4 zamiast 5 kg i wyglądało to na ręczną edycję stanu w Odoo. Kartoteki o tej samej nazwie, ale różnych jednostkach (`O010` — 1 szt., `O011` — 10 kg) NIE są scalane: „11 szt." nie znaczyłoby nic, a przeliczenie kg na opakowania wymaga wiedzy, ile waży paczka.
 
