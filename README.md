@@ -101,6 +101,7 @@ Sesje przechowywane są w kolekcji `sessions`; `connect-mongo` **współdzieli**
 | `npm run odoo:pobierz` | Pobranie z Odoo (produkty z kosztem, ruchy, przekazy) — tylko odczyt |
 | `npm run odoo:import` | Import bazy produktów z Odoo ze scaleniem partii (domyślnie na sucho) |
 | `npm run odoo:historia` | Zaciągnięcie historii ruchów i przetworzeń z Odoo (domyślnie na sucho) |
+| `npm run kody:sprzet` | Ujednolicenie kodów sprzętu + mapowanie stary→nowy (domyślnie na sucho) |
 | `npm run odoo:od-zera` | Wyczyszczenie magazynu i pełny import z Odoo jedną komendą (domyślnie na sucho) |
 | `npm test` | Wszystkie testy (wymaga MongoDB; ustaw też dummy `GOOGLE_*`) |
 | `npm run test:unit` | Testy jednostkowe `stock.*` (bez MongoDB) |
@@ -146,6 +147,17 @@ Moduł chodzi po **imiennej liście**, nie po roli: rola mówi, co wolno w środ
 Domyślnie dostępu **nie ma** — pole nieustawione znaczy „nie". Administrator wchodzi zawsze i nie da mu się flagi odebrać, żeby nie dało się zamknąć modułu dla całej firmy.
 
 Bramka (`requireWarehouseAccess`) jest wpięta na prefiks tras — `/warehouse`, `/tw` i `/packing-products` — więc obejmuje też każdy przyszły endpoint modułu bez pamiętania o dopisaniu middleware. Wyjazdy idą pod tę samą bramkę, bo pakowanie realnie zdejmuje sztuki ze stanu.
+
+## Numeracja kartotek
+
+Magazyn i sprzęt dzielą jedną kolekcję `items`, a numeracja Odoo nie wie o istnieniu zaplecza — `T003` to w Odoo „Egzaminatorium matematyka", a kiedyś było u nas „Statywem lampowym". Dlatego dwa światy mają rozłączne serie:
+
+- **Magazyn** trzyma kody z Odoo (`G039`, `T003`, `O011`, `S001`). Nie renumerujemy ich, bo parytet z Odoo musi przeżyć każdy kolejny import.
+- **Sprzęt** ma prefiks kategorii + trzycyfrowy numer: `AS014` (Akcesoria), `AU007` (Audio), `K003` (Kamery), `L011` (Lampy), `M006` (Monitory), `PC005` (Laptop), `R002` (Roll-up), `P001` (Prompter), `STA001` (Statywy), `ST001` (Stream), `KOM001` (Komputer), `ZAK001` (Zakup), `ZDR001` (Zdrowie).
+
+`scripts/kody-sprzetu.mjs` normalizuje kartoteki, które odstają — kolidujące z Odoo, śmieciowe (`DUPA14-45`), generowane automatycznie (`AKCE-MQTBGLJ5`) i z prefiksem nie tej kategorii. Reszty nie tyka, żeby nie przedrukowywać poprawnych etykiet. Zmiana idzie przez `cascadeItemCodeRename`, więc ruchy, stany, wypożyczenia i dokumenty jadą razem z kartoteką, a `qrCodeValue` aktualizuje się tylko wtedy, gdy trzymał stary kod.
+
+Skrypt zawsze zapisuje mapowanie stary→nowy do `Materiały do gitignore/` (CSV dla Excela i JSON) — także przy próbie na sucho.
 
 ## Testy i CI
 
