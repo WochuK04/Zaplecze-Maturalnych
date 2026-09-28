@@ -27,7 +27,7 @@ import { fileURLToPath } from 'url';
 import { connectToDatabase, closeDb } from '../src/db.js';
 import { collections, ensureIndexes } from '../src/schema.js';
 import { cascadeItemCodeRename, recomputeQuants } from '../src/stock.js';
-import { mergeProducts, findConversionCandidates } from '../src/odoo.js';
+import { mergeProducts, findConversionCandidates, tylkoAktywne, findDuplicateCodes } from '../src/odoo.js';
 import { wczytaj } from './odoo/zrodlo.mjs';
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.env') });
@@ -38,8 +38,15 @@ const sciezki = args.filter((a) => !a.startsWith('--'));
 
 const zrodlo = wczytaj(sciezki);
 const teraz = new Date();
-const produkty = mergeProducts(zrodlo.produkty, { teraz });
-const bezKodu = zrodlo.produkty.filter((p) => !String(p.kod ?? '').trim());
+const kartoteki = tylkoAktywne(zrodlo.produkty);
+const wszystkie = mergeProducts(kartoteki, { teraz });
+const bezKodu = kartoteki.filter((p) => !String(p.kod ?? '').trim());
+
+// Zbieg odnośników wewnętrznych (Odoo ich nie pilnuje): kod zostaje przy grupie
+// o większym stanie, przegrywające pomijamy — `items.itemCode` musi być unikalny.
+const konflikty = findDuplicateCodes(wszystkie);
+const pominiete = new Set(konflikty.flatMap((k) => k.przegrywaja));
+const produkty = wszystkie.filter((p) => !pominiete.has(p));
 
 const db = await connectToDatabase();
 await ensureIndexes(db);
@@ -60,13 +67,19 @@ const raport = {
   wchlonietoDokumentow: 0,
   utworzono: [],
   zaktualizowano: [],
+  kartotekZarchiwizowanych: zrodlo.produkty.length - kartoteki.length,
   pominietoBezKodu: bezKodu.map((p) => ({ nazwa: p.nazwa, kategoria: p.kategoria, stan: p.stan })),
+  konfliktyKodow: konflikty.map((k) => ({
+    itemCode: k.itemCode,
+    zostaje: `${k.wygrywa.name} [${k.wygrywa.category}] — ${k.wygrywa.quantity} szt.`,
+    pominieto: k.przegrywaja.map((x) => `${x.name} [${x.category}] — ${x.quantity} szt.`)
+  })),
   paryTowarGadzet: []
 };
 
 // Pary tej samej nazwy w różnych kategoriach — do ręcznego przejrzenia. Zostają
 // osobnymi produktami; tu tylko mówimy, że istnieją.
-for (const k of findConversionCandidates(zrodlo.produkty)) {
+for (const k of findConversionCandidates(kartoteki)) {
   raport.paryTowarGadzet.push({
     nazwa: k.nazwa,
     kartoteki: k.kartoteki.map((x) => `${x.kod}/${x.kategoria}(${x.stan})`)
@@ -163,11 +176,17 @@ raport.podsumowanie = {
   kartotekZlozonychWGrupy: raport.scalono.reduce((n, g) => n + g.zKartotek.length, 0),
   wchlonietoIstniejacychDokumentow: raport.wchlonietoDokumentow,
   parTowarGadzet: raport.paryTowarGadzet.length,
+  konfliktowKodow: raport.konfliktyKodow.length,
   itemsWBazie: await items.countDocuments({})
 };
 
 console.log(JSON.stringify(raport, null, 2));
 if (!ZAPISZ) console.error('\nPRÓBA NA SUCHO — nic nie zapisano. Dodaj --zapisz, żeby wykonać.');
+if (konflikty.length) {
+  console.error(`\nUWAGA: ${konflikty.length} odnośnik(ów) wewnętrznych występuje w Odoo dwa razy.`);
+  for (const k of konflikty) console.error(`  ${k.itemCode}: zostaje „${k.wygrywa.name}", pominięto ${k.przegrywaja.map((x) => `„${x.name}"`).join(', ')}`);
+  console.error('Rozstrzygnij to w Odoo — u nas kod produktu musi być unikalny.');
+}
 if (!zrodlo.koszty) {
   console.error('\nUWAGA: źródło nie ma kosztu — partie wchodzą po 0 zł.');
   console.error('Koszt bierze się z pola `standard_price` w Odoo: uruchom `node scripts/odoo-pobierz.mjs --all`,');

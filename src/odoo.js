@@ -119,6 +119,42 @@ export function mergeProducts(kartoteki, { teraz = new Date() } = {}) {
   return produkty.sort((a, b) => compareCodes(a.itemCode, b.itemCode));
 }
 
+// Kartoteki zarchiwizowane w Odoo są wycofane z obrotu — jako produkty do zaplecza
+// nie wchodzą. Historia potrafi się do nich odwoływać (np. konwersja z 01.2026 idzie
+// z kartoteki, której dziś już nie ma) i wtedy `odoo-historia.mjs` zakłada je jako
+// nieaktywne. Eksport .xlsx oddaje same aktywne i nie ma tego pola, więc brak
+// informacji traktujemy jak „aktywna".
+export function tylkoAktywne(kartoteki) {
+  return (Array.isArray(kartoteki) ? kartoteki : []).filter((k) => k.aktywny !== false);
+}
+
+// Odoo NIE pilnuje unikalności odnośnika wewnętrznego — potrafią istnieć dwie
+// kartoteki o tym samym kodzie (G041 to naraz zarchiwizowane „Krówki matura" i
+// aktywny „Planer 8 mies mat"). U nas `items.itemCode` jest unikalny, więc taki
+// zbieg trzeba wyłapać, zanim import wywali się na indeksie.
+//
+// Zwraca [{ itemCode, wygrywa, przegrywaja }] — kod zostaje przy grupie o większym
+// stanie (przy remisie: o większej liczbie kartotek), reszta jest do pominięcia
+// i do ręcznego rozstrzygnięcia w Odoo.
+export function findDuplicateCodes(produkty) {
+  const wgKodu = new Map();
+  for (const p of Array.isArray(produkty) ? produkty : []) {
+    if (!wgKodu.has(p.itemCode)) wgKodu.set(p.itemCode, []);
+    wgKodu.get(p.itemCode).push(p);
+  }
+
+  const out = [];
+  for (const [itemCode, grupy] of wgKodu) {
+    if (grupy.length < 2) continue;
+    const posortowane = grupy.slice().sort((a, b) => {
+      if (a.quantity !== b.quantity) return b.quantity - a.quantity;
+      return b.zrodla.length - a.zrodla.length;
+    });
+    out.push({ itemCode, wygrywa: posortowane[0], przegrywaja: posortowane.slice(1) });
+  }
+  return out;
+}
+
 // Pary kartotek o tej samej nazwie, ale różnych kategoriach — kandydaci na
 // przetworzenie, NIE na scalenie. Zwracamy je osobno, żeby dało się je przejrzeć.
 export function findConversionCandidates(kartoteki) {

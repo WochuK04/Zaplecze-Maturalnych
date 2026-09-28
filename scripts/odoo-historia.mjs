@@ -27,7 +27,7 @@ import { fileURLToPath } from 'url';
 import { connectToDatabase, closeDb } from '../src/db.js';
 import { collections, ensureIndexes } from '../src/schema.js';
 import { seedStandardLocations, recomputeQuants, refreshItemCache } from '../src/stock.js';
-import { mergeProducts, normalizeMoveLine, detectConversions } from '../src/odoo.js';
+import { mergeProducts, normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes } from '../src/odoo.js';
 import { wczytaj } from './odoo/zrodlo.mjs';
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.env') });
@@ -53,7 +53,11 @@ const zrodlo = wczytaj(sciezki);
 const teraz = new Date();
 
 // --- mapa kodów: kod kartoteki Odoo → kod produktu w zapleczu po scaleniu --------
-const produkty = mergeProducts(zrodlo.produkty, { teraz });
+// Ta sama filtracja co w `odoo-import.mjs` — inaczej mapa kodów rozjechałaby się
+// z tym, co realnie wylądowało w `items`.
+const wszystkieProdukty = mergeProducts(tylkoAktywne(zrodlo.produkty), { teraz });
+const pominiete = new Set(findDuplicateCodes(wszystkieProdukty).flatMap((k) => k.przegrywaja));
+const produkty = wszystkieProdukty.filter((p) => !pominiete.has(p));
 const naWiodacy = new Map();
 for (const p of produkty) {
   naWiodacy.set(p.itemCode, p.itemCode);

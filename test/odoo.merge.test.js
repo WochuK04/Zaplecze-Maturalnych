@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseProductRef, productCore, compareCodes, pickCanonical,
   mergeProducts, findConversionCandidates, mapLocation, classifyMove,
-  normalizeMoveLine, detectConversions
+  normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes
 } from '../src/odoo.js';
 
 const d = (s) => new Date(s);
@@ -169,4 +169,34 @@ test('detectConversions ignoruje ruchy spoza korekt stanu', () => {
   ]);
   assert.equal(conversions.length, 0);
   assert.equal(pozostaleKorekty.length, 0);
+});
+
+test('tylkoAktywne odsiewa zarchiwizowane, brak pola traktuje jak aktywną', () => {
+  const out = tylkoAktywne([
+    { kod: 'G050', aktywny: true },
+    { kod: 'G041', aktywny: false },
+    { kod: 'G039' }
+  ]);
+  assert.deepEqual(out.map((x) => x.kod), ['G050', 'G039']);
+});
+
+test('findDuplicateCodes łapie ten sam kod na dwóch produktach', () => {
+  const produkty = mergeProducts([
+    { kod: 'G041', nazwa: 'Krówki matura', kategoria: 'gadżet', stan: 0 },
+    { kod: 'G041', nazwa: 'Planer 8 mies mat', kategoria: 'gadżet', stan: 45 }
+  ]);
+  assert.equal(produkty.length, 2);
+  const k = findDuplicateCodes(produkty);
+  assert.equal(k.length, 1);
+  assert.equal(k[0].itemCode, 'G041');
+  assert.equal(k[0].wygrywa.name, 'Planer 8 mies mat');
+  assert.deepEqual(k[0].przegrywaja.map((x) => x.name), ['Krówki matura']);
+});
+
+test('findDuplicateCodes milczy, gdy kody są unikalne', () => {
+  const produkty = mergeProducts([
+    { kod: 'G039', nazwa: 'Arkusz polski e8', kategoria: 'gadżet', stan: 279 },
+    { kod: 'T003', nazwa: 'Egzaminatorium', kategoria: 'Towar', stan: 277 }
+  ]);
+  assert.deepEqual(findDuplicateCodes(produkty), []);
 });
