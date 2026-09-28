@@ -72,7 +72,7 @@ function takeLayers(layers, qty, preferPrice = null) {
 //   added    – warstwy do dołożenia (gdy ruch zwiększa stan fizyczny)
 //   consumed – warstwy zdjęte przez oryginalną operację (gdy zmniejsza), jeśli zapisano detal
 // Brak informacji = null, wywołujący wpada wtedy w przybliżenie.
-function pricesFromOperation(op, move) {
+export function pricesFromOperation(op, move) {
   if (!op) return { added: null, consumed: null };
   const code = move.itemCode;
 
@@ -108,6 +108,26 @@ function pricesFromOperation(op, move) {
   }
 
   return { added: null, consumed: null };
+}
+
+/**
+ * Partie cenowe pojedynczego ruchu — do raportów, które pokazują cenę obok ilości.
+ *
+ * Ruch zwiększający stan wycenia się warstwami, które wniósł (`added`); zmniejszający
+ * — warstwami, które zdjął FIFO (`consumed`). Obie odpowiedzi mogą nie istnieć i to
+ * NIE jest to samo co zero: dokumenty odtworzone z Odoo (`importedFrom`) nie niosą
+ * kosztów, bo Odoo nie podaje ich w eksporcie ruchów. Raport musi umieć powiedzieć
+ * „nie wiem, bo import", zamiast pokazywać gołą kreskę, którą czyta się jak błąd —
+ * dokładnie to zgłoszenie przyszło z Magazynu („eksport nie pobiera cen i wartości").
+ *
+ * @returns {{ batches: object[]|null, unpriced: null|'import'|'brak-danych' }}
+ */
+export function movePriceBatches(op, move) {
+  if (!op) return { batches: null, unpriced: 'brak-danych' };
+  const { added, consumed } = pricesFromOperation(op, move);
+  const batches = consumed?.length ? consumed : (added?.length ? added : null);
+  if (batches) return { batches, unpriced: null };
+  return { batches: null, unpriced: op.importedFrom ? 'import' : 'brak-danych' };
 }
 
 /**
