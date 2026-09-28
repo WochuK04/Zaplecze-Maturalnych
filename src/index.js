@@ -1827,9 +1827,13 @@ async function loadOperationDetail(db, id) {
   const locById = new Map(locations.map(l => [String(l._id), l]));
   const codes = [...new Set((op.lines || []).flatMap(l => [l.itemCode, l.targetItemCode]).filter(Boolean))];
   const items = codes.length
-    ? await db.collection(collections.items).find({ itemCode: { $in: codes } }, { projection: { itemCode: 1, name: 1 } }).toArray()
+    ? await db.collection(collections.items).find({ itemCode: { $in: codes } }, { projection: { itemCode: 1, name: 1, unit: 1 } }).toArray()
     : [];
   const nameByCode = new Map(items.map(i => [i.itemCode, i.name]));
+  // Jednostkę niesie sam dokument, a nie cache produktów w przeglądarce: ten trzyma
+  // tylko kartoteki aktywne, więc pozycje na kartotekach zarchiwizowanych (krówki
+  // z 2025) traciły „kg" i wyświetlały się jako goła liczba.
+  const unitByCode = new Map(items.map(i => [i.itemCode, normalizeUnit(i.unit)]));
 
   const detail = {
     id: String(op._id),
@@ -1856,6 +1860,7 @@ async function loadOperationDetail(db, id) {
     lines: (op.lines || []).map(l => ({
       itemCode: l.itemCode,
       itemName: nameByCode.get(l.itemCode) || '',
+      unit: unitByCode.get(l.itemCode) || null,
       targetItemCode: l.targetItemCode || null,
       targetName: l.targetItemCode ? (nameByCode.get(l.targetItemCode) || '') : null,
       quantity: l.quantity ?? null,
