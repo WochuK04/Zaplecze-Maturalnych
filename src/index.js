@@ -9,7 +9,7 @@ import { ObjectId } from 'mongodb';
 
 import { getDb, connectToDatabase, getMongoClient } from './db.js';
 import { collections, ensureIndexes } from './schema.js';
-import { setupPassport, requireAuth, requireAdmin, requireManager, requireWarehouseRead } from './auth.js';
+import { setupPassport, requireAuth, requireAdmin, requireManager, requireWarehouseRead, requireWarehouseAccess, hasWarehouseAccess } from './auth.js';
 import { LOCATION_KINDS, OPERATION_TYPES, RESERVING_OP_TYPES, validateOperation, reverseOperation, nextReference, isOperationType, computeReplenishment, replenishmentDraft, reservedQuantities, checkReservation, isReorderScope, isProtectedLocation, slugifyLocationCode, cascadeItemCodeRename, computeValuation, summarizeMovesByKind, computeGiftThresholdReport, GIFT_VAT_THRESHOLD, computeStockHealth, recomputeQuants, refreshItemCache, computeAging, computeConversionHistory, applyMove, isStockableKind } from './stock.js';
 import { createOperationPdfDoc } from './operation-pdf.js';
 import { MANAGER_MAP } from './manager-map.js';
@@ -404,6 +404,7 @@ app.get('/me', (req, res) => {
       email: req.user.email,
       fullName: req.user.fullName,
       role: req.user.role,
+      warehouseAccess: hasWarehouseAccess(req.user),
       preferences: normalizePreferences(req.user.preferences)
     }
   });
@@ -518,6 +519,17 @@ app.get('/locations', requireAuth, async (_req, res) => {
 
   res.json([...new Set([...locationNames, ...FALLBACK_LOCATIONS])]);
 });
+
+// ===== Magazyn — imienna lista dostępu =====
+// Bramka na PREFIKS, nie na pojedyncze trasy: każdy endpoint modułu (obecny i
+// przyszły) jest objęty bez pamiętania o dopisaniu middleware. Rola decyduje dalej,
+// co wolno w środku — `requireWarehouseRead` i `requireAdmin` zostają bez zmian.
+//
+// `/tw` i `/packing-products` to Wyjazdy, które siedzą wewnątrz Magazynu i realnie
+// ruszają stanem (pakowanie zdejmuje sztuki), więc idą pod tę samą bramkę.
+app.use('/warehouse', requireAuth, requireWarehouseAccess);
+app.use('/tw', requireAuth, requireWarehouseAccess);
+app.use('/packing-products', requireAuth, requireWarehouseAccess);
 
 // ===== Magazyn „w stylu Odoo" – endpointy odczytu (Faza 1) =====
 // Wszystkie pod `requireWarehouseRead` (viewer/manager/admin). Tylko odczyt.
@@ -3522,13 +3534,17 @@ app.get('/admin/users', requireAuth, requireAdmin, async (_req, res) => {
   const db = await getDb();
 
   const users = await db.collection(collections.users)
-    .find({}, { projection: { email: 1, fullName: 1, role: 1, managerEmail: 1, isActive: 1, googleId: 1, offboardedAt: 1 } })
+    .find({}, { projection: { email: 1, fullName: 1, role: 1, managerEmail: 1, isActive: 1, googleId: 1, offboardedAt: 1, warehouseAccess: 1 } })
     .sort({ fullName: 1 })
     .toArray();
 
   // Brak googleId → konto utworzone z góry, jeszcze bez pierwszego logowania.
   res.json(users.map(({ googleId, ...u }) => ({
     ...u,
+    // Admin ma Magazyn z urzędu — pokazujemy to jako zaznaczone i zablokowane,
+    // żeby lista w panelu nie kłamała o tym, kto realnie wejdzie do modułu.
+    warehouseAccess: u.role === 'admin' ? true : u.warehouseAccess === true,
+    warehouseAccessLocked: u.role === 'admin',
     pendingFirstLogin: !googleId,
     offboarded: u.isActive === false || !!u.offboardedAt
   })));
@@ -3607,7 +3623,7 @@ app.post('/admin/users', requireAuth, requireAdmin, async (req, res) => {
 app.patch('/admin/users/:email', requireAuth, requireAdmin, async (req, res) => {
   const db = await getDb();
   const email = String(req.params.email || '').trim().toLowerCase();
-  const { role, managerEmail } = req.body;
+  const { role, managerEmail, warehouseAccess } = req.body;
 
   const user = await db.collection(collections.users).findOne({ email });
   if (!user) {
@@ -3624,6 +3640,15 @@ app.patch('/admin/users/:email', requireAuth, requireAdmin, async (req, res) => 
       return res.status(400).json({ message: 'Nie możesz odebrać sobie uprawnień administratora' });
     }
     update.role = role;
+  }
+
+  // Imienna lista dostępu do Magazynu. Adminowi się jej nie ustawia — ma moduł
+  // z urzędu (hasWarehouseAccess), więc zapis flagi tylko zaciemniałby obraz.
+  if (warehouseAccess !== undefined) {
+    if (user.role === 'admin') {
+      return res.status(400).json({ message: 'Administrator ma dostęp do Magazynu z urzędu' });
+    }
+    update.warehouseAccess = warehouseAccess === true;
   }
 
   if (managerEmail !== undefined) {

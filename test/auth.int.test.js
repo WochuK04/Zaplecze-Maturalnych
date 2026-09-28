@@ -42,7 +42,9 @@ function call(server, method, path, body) {
 }
 
 const admin = { email: 'admin@maturalni.com', fullName: 'Admin', role: 'admin' };
-const viewer = { email: 'viewer@maturalni.com', fullName: 'Widz', role: 'viewer' };
+// Rola daje wgląd, ale do modułu wpuszcza dopiero imienna lista (warehouseAccess).
+const viewer = { email: 'viewer@maturalni.com', fullName: 'Widz', role: 'viewer', warehouseAccess: true };
+const viewerBezListy = { email: 'widz2@maturalni.com', fullName: 'Widz bez listy', role: 'viewer' };
 const plainUser = { email: 'user@maturalni.com', fullName: 'Zwykły', role: 'user' };
 
 let db;
@@ -86,7 +88,7 @@ test('requireAdmin: zwykły user → 403, admin → 200', async () => {
   assert.ok(Array.isArray(ok.json));
 });
 
-test('requireWarehouseRead: user → 403, viewer → 200', async () => {
+test('Magazyn: user → 403, viewer z listy → 200, viewer bez listy → 403', async () => {
   const asUser = await startServer(plainUser);
   const denied = await call(asUser, 'GET', '/warehouse/valuation');
   asUser.close();
@@ -96,6 +98,12 @@ test('requireWarehouseRead: user → 403, viewer → 200', async () => {
   const ok = await call(asViewer, 'GET', '/warehouse/valuation');
   asViewer.close();
   assert.equal(ok.status, 200);
+
+  // Sama rola już nie wystarcza — moduł chodzi po imiennej liście dostępu.
+  const asViewerBez = await startServer(viewerBezListy);
+  const bezListy = await call(asViewerBez, 'GET', '/warehouse/valuation');
+  asViewerBez.close();
+  assert.equal(bezListy.status, 403);
 });
 
 test('PUT /me/preferences zapisuje motyw do dokumentu użytkownika', async () => {

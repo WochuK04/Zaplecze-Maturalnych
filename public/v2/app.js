@@ -123,12 +123,23 @@
     $$('[data-email]').forEach((n) => (n.textContent = u.email || '—'));
     const isManager = u.role === 'manager' || u.role === 'admin';
     $$('[data-manager-only]').forEach((n) => n.classList.toggle('hidden', !isManager));
-    const isWarehouse = ['viewer', 'manager', 'admin'].includes(u.role);
+    // Magazyn chodzi po imiennej liście dostępu, nie po roli — serwer liczy to
+    // w `hasWarehouseAccess` i oddaje w /me, żeby interfejs nie powielał reguły.
+    const isWarehouse = u.warehouseAccess === true;
     $$('[data-warehouse-only]').forEach((n) => n.classList.toggle('hidden', !isWarehouse));
     const isAdmin = u.role === 'admin';
     $$('[data-admin-only]').forEach((n) => n.classList.toggle('hidden', !isAdmin));
     const p = $('[data-pulpit-greeting]');
     if (p) p.textContent = 'Dzień dobry, ' + first + ' 👋';
+
+    // Liczba modułów na pulpicie zależy od uprawnień (Magazyn chodzi po imiennej
+    // liście), więc liczymy widoczne kafle zamiast trzymać liczebnik w treści.
+    const line = $('[data-modules-line]');
+    if (line) {
+      const n = $$('.launcher-grid .mod-card').filter((c) => !c.classList.contains('hidden')).length;
+      const ile = { 1: 'Jeden moduł', 2: 'Dwa moduły', 3: 'Trzy moduły', 4: 'Cztery moduły' }[n];
+      line.textContent = (ile ? ile + ', jedno zaplecze.' : 'Jedno zaplecze.') + ' Wybierz, gdzie chcesz teraz pracować.';
+    }
   }
 
   // -------------------------------------------------------------- theme & prefs
@@ -183,7 +194,7 @@
   }
 
   async function refreshWarehouseCounts() {
-    if (!state.user || !['viewer', 'manager', 'admin'].includes(state.user.role)) return;
+    if (!state.user || state.user.warehouseAccess !== true) return;
     try {
       const val = await api('/warehouse/valuation');
       state.mag.valuation = val;
@@ -2728,12 +2739,15 @@
       const managers = users.filter((u) => u.role === 'manager' || u.role === 'admin');
       const me = state.user && state.user.email;
       const roleSel = (u) => `<select class="usel" data-user-role="${esc(u.email)}">${Object.keys(ROLE_LABELS).map((r) => `<option value="${r}"${(u.role || 'user') === r ? ' selected' : ''}>${esc(ROLE_LABELS[r])}</option>`).join('')}</select>`;
+      // Imienna lista dostępu do Magazynu. Adminowi checkbox jest zablokowany —
+      // ma moduł z urzędu, a serwer i tak odrzuci próbę ustawienia mu flagi.
+      const whChk = (u) => `<label class="wh-access" title="${u.warehouseAccessLocked ? 'Administrator ma Magazyn z urzędu' : 'Dostęp do modułu Magazyn'}"><input type="checkbox" data-user-wh="${esc(u.email)}"${u.warehouseAccess ? ' checked' : ''}${u.warehouseAccessLocked ? ' disabled' : ''}></label>`;
       const mgrSel = (u) => `<select class="usel" data-user-mgr="${esc(u.email)}"><option value="">— bezpośrednio do administracji —</option>${managers.filter((m) => m.email !== u.email).map((m) => `<option value="${esc(m.email)}"${u.managerEmail === m.email ? ' selected' : ''}>${esc(m.fullName || m.email)} (${esc(ROLE_LABELS[m.role] || m.role)})</option>`).join('')}</select>`;
       list.innerHTML = tableHTML(
-        [{ t: 'Użytkownik' }, { t: 'E-mail' }, { t: 'Rola' }, { t: 'Wnioski trafiają do' }, { t: '', num: true }],
+        [{ t: 'Użytkownik' }, { t: 'E-mail' }, { t: 'Rola' }, { t: 'Magazyn', num: true }, { t: 'Wnioski trafiają do' }, { t: '', num: true }],
         users.map((u) => ({ cells: [
           { html: `${esc(u.fullName || u.email)}${u.pendingFirstLogin ? ' <span class="chip chip-orange">oczekuje na logowanie</span>' : ''}${u.offboarded ? ' <span class="chip chip-grey">off-boarded</span>' : ''}` },
-          { v: u.email, cls: 'mut' }, { html: roleSel(u) }, { html: mgrSel(u) },
+          { v: u.email, cls: 'mut' }, { html: roleSel(u) }, { html: whChk(u), cls: 'num' }, { html: mgrSel(u) },
           { html: u.email === me
               ? '<span class="eq-sub">to Ty</span>'
               : `<div class="row-actions">${u.offboarded ? '' : `<button class="btn btn-ghost btn-sm" data-user-offboard="${esc(u.email)}">Off-board</button>`}<button class="btn btn-danger-ghost btn-sm" data-user-del="${esc(u.email)}">Usuń</button></div>`, cls: 'num' }
@@ -2745,6 +2759,7 @@
   function bindUserSelects(root) {
     $$('[data-user-role]', root).forEach((s) => s.addEventListener('change', () => patchUser(s.getAttribute('data-user-role'), { role: s.value })));
     $$('[data-user-mgr]', root).forEach((s) => s.addEventListener('change', () => patchUser(s.getAttribute('data-user-mgr'), { managerEmail: s.value })));
+    $$('[data-user-wh]', root).forEach((c) => c.addEventListener('change', () => patchUser(c.getAttribute('data-user-wh'), { warehouseAccess: c.checked })));
   }
   function patchUser(email, body) {
     api('/admin/users/' + encodeURIComponent(email), { method: 'PATCH', body: JSON.stringify(body) })
