@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseProductRef, productCore, compareCodes, pickCanonical,
   mergeProducts, findConversionCandidates, mapLocation, classifyMove,
-  normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes
+  normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions
 } from '../src/odoo.js';
 
 const d = (s) => new Date(s);
@@ -199,4 +199,58 @@ test('findDuplicateCodes milczy, gdy kody są unikalne', () => {
     { kod: 'T003', nazwa: 'Egzaminatorium', kategoria: 'Towar', stan: 277 }
   ]);
   assert.deepEqual(findDuplicateCodes(produkty), []);
+});
+
+test('resolveCodeCollisions nie pozwala importowi przejąć kodu sprzętu', () => {
+  // Realny przypadek z produkcji: T003 to w Odoo „Egzaminatorium matematyka",
+  // a w zapleczu „Statyw lampowy" z importu Excela.
+  const produkty = mergeProducts([
+    { kod: 'T003', nazwa: 'Egzaminatorium matematyka wydanie I', kategoria: 'Towar', stan: 277, koszt: 21.65 },
+    { kod: 'G039', nazwa: 'Arkusz polski e8', kategoria: 'gadżet', stan: 279, koszt: 3.35 }
+  ]);
+  const { produkty: out, mapa, kolizje } = resolveCodeCollisions(produkty, new Set(['T003']));
+
+  assert.equal(kolizje.length, 1);
+  assert.deepEqual(
+    { odoo: kolizje[0].odooCode, nowy: kolizje[0].itemCode },
+    { odoo: 'T003', nowy: 'MAG-T003' }
+  );
+  assert.equal(mapa.get('T003'), 'MAG-T003');
+
+  const egz = out.find((p) => p.odooCode === 'T003');
+  assert.equal(egz.itemCode, 'MAG-T003');
+  assert.equal(egz.quantity, 277);
+  // Kartoteka bez kolizji zostaje ze swoim kodem z Odoo.
+  assert.equal(out.find((p) => p.name === 'Arkusz polski e8').itemCode, 'G039');
+});
+
+test('resolveCodeCollisions łapie kolizję także na kodzie wchłoniętym', () => {
+  const produkty = mergeProducts([
+    { kod: 'G009', nazwa: 'Kubek E8', kategoria: 'gadżet', stan: 109, koszt: 20.25 },
+    { kod: 'G008', nazwa: 'Kubek E8', kategoria: 'gadżet', stan: 0, koszt: 18.45 }
+  ]);
+  // Kolizja siedzi na kodzie scalonym (G008), nie na wiodącym.
+  const { produkty: out, mapa, kolizje } = resolveCodeCollisions(produkty, new Set(['G008']));
+  assert.equal(kolizje.length, 1);
+  assert.equal(out[0].itemCode, 'MAG-G009');
+  assert.equal(mapa.get('G008'), 'MAG-G009');
+  assert.equal(mapa.get('G009'), 'MAG-G009');
+});
+
+test('resolveCodeCollisions milczy, gdy nic nie koliduje', () => {
+  const produkty = mergeProducts([
+    { kod: 'G039', nazwa: 'Arkusz polski e8', kategoria: 'gadżet', stan: 279, koszt: 3.35 }
+  ]);
+  const { produkty: out, kolizje } = resolveCodeCollisions(produkty, new Set(['KAM-1', 'LAP-7']));
+  assert.equal(kolizje.length, 0);
+  assert.equal(out[0].itemCode, 'G039');
+  assert.ok(!('odooCode' in out[0]));
+});
+
+test('resolveCodeCollisions porównuje kody bez względu na wielkość liter', () => {
+  const produkty = mergeProducts([
+    { kod: 'T003', nazwa: 'Egzaminatorium', kategoria: 'Towar', stan: 10, koszt: 1 }
+  ]);
+  const { kolizje } = resolveCodeCollisions(produkty, new Set(['t003']));
+  assert.equal(kolizje.length, 1);
 });

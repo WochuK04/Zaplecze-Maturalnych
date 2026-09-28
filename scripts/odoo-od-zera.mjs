@@ -57,7 +57,14 @@ const KOLEKCJE_MAGAZYNU = [
 // sprzętowi rejestr, mimo że kartoteki miały zostać. Zdejmujemy więc tylko to, co
 // dotyczy kasowanych kodów — plus ruchy z importu Odoo, gdyby któryś osierociał.
 const REJESTR_STANU = [collections.stockMoves, collections.quants, collections.lots];
-const filtrRejestru = (kody) => ({ $or: [{ itemCode: { $in: kody } }, { importedFrom: 'odoo' }] });
+
+// Do zdjęcia idą też wpisy WISZĄCE — wskazujące na kartotekę, której już nie ma.
+// Na produkcji leżało 34 takich ruchów `opening` po pozycjach magazynu skasowanych
+// w czerwcu; pełne przeliczenie stanu materializowało z nich quanty, które raport
+// spójności zgłaszał jako sieroty. Ruch bez kartoteki to śmieć niezależnie od tego,
+// czyj był, więc zdejmujemy go razem z resztą.
+const filtrRejestru = (kody, wiszace = []) =>
+  ({ $or: [{ itemCode: { $in: [...kody, ...wiszace] } }, { importedFrom: 'odoo' }] });
 
 // W zakresie „wszystko" zostawiamy konta i sesje — inaczej nikt się nie zaloguje,
 // żeby to naprawić, a role i lista dostępu do Magazynu przepadają.
@@ -70,19 +77,29 @@ let itemsDoUsuniecia = 0;
 let itemsZostaje = 0;
 
 let kodyMagazynu = [];
+let kodyWiszace = [];
 
 if (ZAKRES === 'magazyn') {
   const items = await db.collection(collections.items)
     .find({}, { projection: { category: 1, itemCode: 1 } }).toArray();
   const magazynowe = items.filter((i) => isWarehouseCategory(i.category));
   kodyMagazynu = magazynowe.map((i) => i.itemCode);
+
+  const znane = new Set(items.map((i) => i.itemCode));
+  kodyWiszace = [...new Set(
+    (await db.collection(collections.stockMoves).find({}, { projection: { itemCode: 1 } }).toArray())
+      .map((m) => m.itemCode)
+  )].filter((k) => !znane.has(k));
   itemsDoUsuniecia = magazynowe.length;
   itemsZostaje = items.length - itemsDoUsuniecia;
   plan.push({ kolekcja: collections.items, usuwamy: itemsDoUsuniecia, zostaje: itemsZostaje, filtr: 'kategorie magazynowe' });
   for (const k of REJESTR_STANU) {
-    const usuwamy = await db.collection(k).countDocuments(filtrRejestru(kodyMagazynu));
+    const usuwamy = await db.collection(k).countDocuments(filtrRejestru(kodyMagazynu, kodyWiszace));
     const wszystkie = await db.collection(k).countDocuments({});
-    plan.push({ kolekcja: k, usuwamy, zostaje: wszystkie - usuwamy, filtr: 'tylko kody magazynowe' });
+    plan.push({
+      kolekcja: k, usuwamy, zostaje: wszystkie - usuwamy,
+      filtr: kodyWiszace.length ? `kody magazynowe + ${kodyWiszace.length} wiszących` : 'tylko kody magazynowe'
+    });
   }
   for (const k of KOLEKCJE_MAGAZYNU) {
     plan.push({ kolekcja: k, usuwamy: await db.collection(k).countDocuments({}), zostaje: 0, filtr: 'całość' });
@@ -136,7 +153,7 @@ if (POTWIERDZENIE !== nazwaBazy) {
 console.log('\nCZYSZCZENIE…');
 if (ZAKRES === 'magazyn') {
   for (const k of REJESTR_STANU) {
-    const { deletedCount } = await db.collection(k).deleteMany(filtrRejestru(kodyMagazynu));
+    const { deletedCount } = await db.collection(k).deleteMany(filtrRejestru(kodyMagazynu, kodyWiszace));
     const zostalo = await db.collection(k).countDocuments({});
     console.log(`  ${k}: usunięto ${deletedCount}, zostało ${zostalo} (sprzęt)`);
   }

@@ -155,6 +155,39 @@ export function findDuplicateCodes(produkty) {
   return out;
 }
 
+// Kody magazynu i kody sprzętu żyją w JEDNEJ kolekcji `items`, a numeracja Odoo
+// nie wie o istnieniu zaplecza. Realny przypadek: `T003` to w Odoo „Egzaminatorium
+// matematyka", a w zapleczu — od importu z Excela — „Statyw lampowy". Kartoteki
+// sprzętu są cudzą własnością tego modułu; import magazynu NIE MOŻE ich dotknąć
+// ani przejąć ich kodu.
+//
+// Dlatego kolidującej kartotece Odoo nadajemy własny kod z prefiksem `MAG-`.
+// Prefiks, nie sufiks, bo od razu widać, że to pozycja magazynu, a nie wariant
+// sprzętu. Oryginalny kod Odoo zostaje w `odooCode`, żeby dało się go wyświetlić
+// i żeby powrót do parytetu (gdy sprzęt dostanie inne kody) był mechaniczny.
+//
+// `zajeteKody` to kody kartotek NIEMAGAZYNOWYCH z bazy. Zwraca produkty z ewentualnie
+// zmienionym `itemCode` oraz mapę { stary → nowy } do przepisania historii.
+export const KOD_KOLIZJI = (kod) => `MAG-${kod}`;
+
+export function resolveCodeCollisions(produkty, zajeteKody = new Set()) {
+  const zajete = new Set([...zajeteKody].map((k) => String(k).toUpperCase()));
+  const mapa = new Map();
+  const kolizje = [];
+
+  const out = (Array.isArray(produkty) ? produkty : []).map((p) => {
+    const kolidujace = [p.itemCode, ...p.mergedCodes].filter((k) => zajete.has(String(k).toUpperCase()));
+    if (!kolidujace.length) return p;
+
+    const nowy = KOD_KOLIZJI(p.itemCode);
+    kolizje.push({ odooCode: p.itemCode, itemCode: nowy, name: p.name, kolidujace });
+    for (const k of [p.itemCode, ...p.mergedCodes]) mapa.set(k, nowy);
+    return { ...p, itemCode: nowy, odooCode: p.itemCode };
+  });
+
+  return { produkty: out, mapa, kolizje };
+}
+
 // Pary kartotek o tej samej nazwie, ale różnych kategoriach — kandydaci na
 // przetworzenie, NIE na scalenie. Zwracamy je osobno, żeby dało się je przejrzeć.
 export function findConversionCandidates(kartoteki) {
