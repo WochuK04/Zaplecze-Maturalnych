@@ -27,7 +27,8 @@ import { fileURLToPath } from 'url';
 import { connectToDatabase, closeDb } from '../src/db.js';
 import { collections, ensureIndexes } from '../src/schema.js';
 import { seedStandardLocations, recomputeQuants, refreshItemCache } from '../src/stock.js';
-import { mergeProducts, normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes } from '../src/odoo.js';
+import { mergeProducts, normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, KOD_KOLIZJI } from '../src/odoo.js';
+import { isWarehouseCategory } from '../src/lib/categories.js';
 import { wczytaj } from './odoo/zrodlo.mjs';
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.env') });
@@ -57,14 +58,37 @@ const teraz = new Date();
 // z tym, co realnie wylądowało w `items`.
 const wszystkieProdukty = mergeProducts(tylkoAktywne(zrodlo.produkty), { teraz });
 const pominiete = new Set(findDuplicateCodes(wszystkieProdukty).flatMap((k) => k.przegrywaja));
-const produkty = wszystkieProdukty.filter((p) => !pominiete.has(p));
+const bezDuplikatow = wszystkieProdukty.filter((p) => !pominiete.has(p));
 const naWiodacy = new Map();
+const kanon = (kod) => (kod ? naWiodacy.get(kod) || kod : null);
+
+const db = await connectToDatabase();
+await ensureIndexes(db);
+const lok = await seedStandardLocations(db);
+
+// Ta sama zasada co w `odoo-import.mjs`: kod zajęty przez kartotekę niemagazynową
+// (sprzęt) jest nietykalny, a kolidująca pozycja Odoo dostaje kod z prefiksem MAG-.
+// Musi to pójść PRZED budową mapy kodów, inaczej ruchy magazynowe podpięłyby się
+// pod statyw.
+const obceKody = new Set(
+  (await db.collection(collections.items).find({}, { projection: { itemCode: 1, category: 1 } }).toArray())
+    .filter((i) => !isWarehouseCategory(i.category))
+    .map((i) => i.itemCode)
+);
+const { produkty, kolizje } = resolveCodeCollisions(bezDuplikatow, obceKody);
 for (const p of produkty) {
+  naWiodacy.set(p.odooCode || p.itemCode, p.itemCode);
   naWiodacy.set(p.itemCode, p.itemCode);
   for (const k of p.mergedCodes) naWiodacy.set(k, p.itemCode);
 }
-const kanon = (kod) => (kod ? naWiodacy.get(kod) || kod : null);
 
+// Kartoteki ZARCHIWIZOWANE w Odoo nie przechodzą przez `produkty` (import bierze
+// tylko aktywne), a historia i tak się do nich odwołuje — np. konwersja
+// G001 → T001 ze stycznia. Gdyby taki kod był w zapleczu zajęty przez sprzęt,
+// ruch magazynowy podpiąłby się pod statyw. Mapujemy je tak samo.
+for (const kod of obceKody) {
+  if (!naWiodacy.has(kod)) naWiodacy.set(kod, KOD_KOLIZJI(kod));
+}
 // --- linie ruchu ----------------------------------------------------------------
 const wszystkieLinie = zrodlo.ruchy.map(normalizeMoveLine);
 const linie = wszystkieLinie
@@ -84,9 +108,6 @@ const przetworzenia = conversions
 const zwykle = zKodem.filter((l) => l.kind !== 'adjustment');
 const korekty = pozostaleKorekty;
 
-const db = await connectToDatabase();
-await ensureIndexes(db);
-const lok = await seedStandardLocations(db);
 const idLok = (kod) => (lok.get(kod) ? String(lok.get(kod)._id) : null);
 
 const items = db.collection(collections.items);
@@ -108,6 +129,7 @@ const raport = {
     z: `${c.sourceCode} ${c.sourceName}`,
     na: `${c.targetCode} ${c.targetName}`
   })),
+  kolizjeZeSprzetem: [],
   brakujaceKartoteki: [],
   operacje: {},
   ruchow: 0,
@@ -126,7 +148,8 @@ const znane = new Set(
   (await items.find({ itemCode: { $in: [...potrzebneKody] } }, { projection: { itemCode: 1 } }).toArray())
     .map((d) => d.itemCode)
 );
-const brakujace = [...potrzebneKody].filter((k) => !znane.has(k));
+// Kod zajęty przez sprzęt nie jest „brakujący" — tam nie wolno nic zakładać.
+const brakujace = [...potrzebneKody].filter((k) => !znane.has(k) && !obceKody.has(k));
 
 // Nazwę bierzemy z pierwszej linii ruchu, kategorię z prefiksu kodu. Takie kartoteki
 // wchodzą jako nieaktywne — to archiwum Odoo, nie żywy asortyment.
@@ -135,6 +158,7 @@ for (const l of zKodem) {
   const k = kanon(l.kod);
   if (k && !nazwaDlaKodu.has(k)) nazwaDlaKodu.set(k, l.nazwa);
 }
+raport.kolizjeZeSprzetem = kolizje.map((k) => ({ odooCode: k.odooCode, itemCode: k.itemCode, nazwa: k.name }));
 raport.brakujaceKartoteki = brakujace.map((k) => ({ itemCode: k, nazwa: nazwaDlaKodu.get(k) || k }));
 
 if (ZAPISZ && brakujace.length) {

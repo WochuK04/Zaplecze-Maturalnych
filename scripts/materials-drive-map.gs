@@ -28,11 +28,38 @@
  * Skrypt działa z Drive API v2 i v3 — wersję wykrywa sam i tłumaczy nazwy pól.
  */
 
-// Można podać kilka korzeni — materiały bywają w różnych miejscach.
+// Katalogi, w których realnie leżą materiały powiązane z bazą — wyciągnięte
+// z arkuszy KontentFolders i KursyWideoFolders wcześniejszego mapowania.
+// UWAGA: drzewo „Baza materiałów TIL/Platforma|ED" to INNY zbiór — pokrywa się
+// z bazą tylko w 6 plikach na 3233, więc skanowanie go nie daje nam nic.
 var KATALOGI_STARTOWE = [
-  '10B3ep0v6w5GIkMTpNGWQ6ugYapF0yPd_'
-];
+  // Kontent
+  '1rnPtQ_Ibt7AcscnGAAFDDBFzFMwcBKGV', // Baza materiałów dodatkowych  ← te ~300 kluczowych
+  '1jlIjduQoT2utDthdkr54KjtQ7LahOo39', // Dysk po sortowaniu
+  '1qAddu-5Y5rCNNrvAH0RviBPouMWbkdKB', // Materiały różne
+  '1xb_S9kVJM1uqVTnq5AMoMRQdts6PzPQZ', // Wydawnictwo
+  '1kArHecgV20Jv7ruBRaZz_xLn7OXUnUBs', // Edukacja domowa
+  '1RbMDGJbsD3wXnsMegUnCD3rTtvsQc-cT', // Kursy wideo
+  '1X35WKKNXXK5yNsVdmX4_hZM46U724_e3', // Biologia - niewyjaśnione
+  '17PNQIVF6B8_mNgV7-9RdRj0-BAJ0xDb-', // Materiały konkurencji
 
+  // Kursy wideo — przedmioty. Foldery „okładki" i „okładki NOWE" pominięte
+  // świadomie: w arkuszu FolderDecisions oznaczone jako SKIP (grafiki, nie materiały).
+  '1CWBIg-8nSw2UlOfjPFGt0Tsxw1u3i58t', // J.POLSKI
+  '1rn8DUiq1Suyl9clBl_9DYyIWAld1xHFL', // Matematyka
+  '1CauMYXoERjweVpYjgipJNGumh25LrsEb', // ANGIELSKI
+  '1TuUeF20JaxhSuX0sTaQ9J46yE3N2HhXa', // NIEMIECKI
+  '1Pye9lvfkYaoEWyMHRX8L2KJqtDnhLMxC', // Biologia
+  '17DdMHWhg4uU1dIAmoWBk9YTXj-4hFeFL', // Chemia
+  '1JA6BwdTS97IgrHtxOhAMXJf5hts_-j4r', // FIZYKA
+  '1ZjHZuEgG2g9zpsJ0HCWTflkdTSIddJ2c', // GEOGRAFIA
+  '18icS4LK6offydk7rbcxLffodsrimzJbL', // HISTORIA
+  '1IM7NudJj65Z9EgONcuui3U-ASdtGpMT6', // WOS
+  '1BvU4cnz6MSphUAaSHbfvCSwWBEh3jDx7', // EDUKACJA OBYWATELSKA
+  '1sCB4qKRMSc3XNpG4u1EexKBL1jdGaZo-', // Biznes i zarządzanie
+  '1YgQh_-ponnIHBjPaWHUKe_ZsHmDWhfL7', // Edukacja Dla Bezpieczeństwa
+  '12g-TixcrQqN9gASFt2QKoWbzty52XBd9'  // Informatyka
+];
 var ARKUSZ_PLIKI = 'AllFiles';
 var ARKUSZ_KOLEJKA = '_kolejka';
 var LIMIT_MS = 4.5 * 60 * 1000;

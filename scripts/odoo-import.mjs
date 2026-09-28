@@ -27,7 +27,8 @@ import { fileURLToPath } from 'url';
 import { connectToDatabase, closeDb } from '../src/db.js';
 import { collections, ensureIndexes } from '../src/schema.js';
 import { cascadeItemCodeRename, recomputeQuants } from '../src/stock.js';
-import { mergeProducts, findConversionCandidates, tylkoAktywne, findDuplicateCodes } from '../src/odoo.js';
+import { mergeProducts, findConversionCandidates, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions } from '../src/odoo.js';
+import { isWarehouseCategory } from '../src/lib/categories.js';
 import { wczytaj } from './odoo/zrodlo.mjs';
 
 dotenv.config({ path: path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.env') });
@@ -46,11 +47,21 @@ const bezKodu = kartoteki.filter((p) => !String(p.kod ?? '').trim());
 // o większym stanie, przegrywające pomijamy — `items.itemCode` musi być unikalny.
 const konflikty = findDuplicateCodes(wszystkie);
 const pominiete = new Set(konflikty.flatMap((k) => k.przegrywaja));
-const produkty = wszystkie.filter((p) => !pominiete.has(p));
+const bezDuplikatow = wszystkie.filter((p) => !pominiete.has(p));
 
 const db = await connectToDatabase();
 await ensureIndexes(db);
 const items = db.collection(collections.items);
+
+// Kody zajęte przez kartoteki NIEMAGAZYNOWE (sprzęt, roll-upy, elektronika).
+// Import magazynu nie ma prawa ich przejąć — `T003` to w Odoo „Egzaminatorium
+// matematyka", a w zapleczu „Statyw lampowy" i to dwie różne rzeczy.
+const obceKody = new Set(
+  (await items.find({}, { projection: { itemCode: 1, category: 1 } }).toArray())
+    .filter((i) => !isWarehouseCategory(i.category))
+    .map((i) => i.itemCode)
+);
+const { produkty, kolizje } = resolveCodeCollisions(bezDuplikatow, obceKody);
 
 // Kody, których quanty trzeba odbudować z ruchów po scaleniu.
 const doPrzeliczenia = new Set();
@@ -69,6 +80,7 @@ const raport = {
   zaktualizowano: [],
   kartotekZarchiwizowanych: zrodlo.produkty.length - kartoteki.length,
   pominietoBezKodu: bezKodu.map((p) => ({ nazwa: p.nazwa, kategoria: p.kategoria, stan: p.stan })),
+  kolizjeZeSprzetem: [],
   konfliktyKodow: konflikty.map((k) => ({
     itemCode: k.itemCode,
     zostaje: `${k.wygrywa.name} [${k.wygrywa.category}] — ${k.wygrywa.quantity} szt.`,
@@ -76,6 +88,11 @@ const raport = {
   })),
   paryTowarGadzet: []
 };
+
+raport.kolizjeZeSprzetem = kolizje.map((k) => ({
+  odooCode: k.odooCode, itemCode: k.itemCode, nazwa: k.name,
+  powod: `kod ${k.kolidujace.join(', ')} należy w zapleczu do kartoteki niemagazynowej`
+}));
 
 // Pary tej samej nazwy w różnych kategoriach — do ręcznego przejrzenia. Zostają
 // osobnymi produktami; tu tylko mówimy, że istnieją.
@@ -177,11 +194,17 @@ raport.podsumowanie = {
   wchlonietoIstniejacychDokumentow: raport.wchlonietoDokumentow,
   parTowarGadzet: raport.paryTowarGadzet.length,
   konfliktowKodow: raport.konfliktyKodow.length,
+  kolizjiZeSprzetem: raport.kolizjeZeSprzetem.length,
   itemsWBazie: await items.countDocuments({})
 };
 
 console.log(JSON.stringify(raport, null, 2));
 if (!ZAPISZ) console.error('\nPRÓBA NA SUCHO — nic nie zapisano. Dodaj --zapisz, żeby wykonać.');
+if (kolizje.length) {
+  console.error(`\nUWAGA: ${kolizje.length} kartotek Odoo ma kod zajęty przez sprzęt — dostały własny kod z prefiksem MAG-.`);
+  for (const k of kolizje) console.error(`  ${k.odooCode} → ${k.itemCode}  („${k.name}")`);
+  console.error('Kartotek sprzętu import NIE tyka. Parytet kodów z Odoo wraca, gdy sprzęt dostanie inną numerację.');
+}
 if (konflikty.length) {
   console.error(`\nUWAGA: ${konflikty.length} odnośnik(ów) wewnętrznych występuje w Odoo dwa razy.`);
   for (const k of konflikty) console.error(`  ${k.itemCode}: zostaje „${k.wygrywa.name}", pominięto ${k.przegrywaja.map((x) => `„${x.name}"`).join(', ')}`);
