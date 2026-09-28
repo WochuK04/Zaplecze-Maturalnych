@@ -101,6 +101,7 @@ Sesje przechowywane są w kolekcji `sessions`; `connect-mongo` **współdzieli**
 | `npm run odoo:pobierz` | Pobranie z Odoo (produkty z kosztem, ruchy, przekazy) — tylko odczyt |
 | `npm run odoo:import` | Import bazy produktów z Odoo ze scaleniem partii (domyślnie na sucho) |
 | `npm run odoo:historia` | Zaciągnięcie historii ruchów i przetworzeń z Odoo (domyślnie na sucho) |
+| `npm run odoo:od-zera` | Wyczyszczenie magazynu i pełny import z Odoo jedną komendą (domyślnie na sucho) |
 | `npm test` | Wszystkie testy (wymaga MongoDB; ustaw też dummy `GOOGLE_*`) |
 | `npm run test:unit` | Testy jednostkowe `stock.*` (bez MongoDB) |
 | `npm run test:int` | Testy integracyjne magazynu (wymaga MongoDB) |
@@ -119,6 +120,18 @@ node scripts/odoo-historia.mjs --zapisz # ruchy, przekazy i przetworzenia towar�
 ```
 
 Bez klucza oba importy przyjmują ścieżki do ręcznych eksportów `.xlsx` z Odoo (`product.template`, `stock.move.line`, `stock.picking`). Eksport `.xlsx` **nie zawiera kosztu** — dołóż w widoku eksportu kolumnę „Koszt" albo używaj RPC, inaczej partie wejdą po 0 zł.
+
+**Wejście od zera (np. na Atlasa).** `odoo-od-zera.mjs` kasuje dotychczasowe dane i odpala oba importy jedną komendą:
+
+```bash
+node scripts/odoo-od-zera.mjs                                   # pokazuje, co zniknie i co wejdzie
+MONGODB_URI='<atlas>' DB_NAME=maturalni_equipment \
+  node scripts/odoo-od-zera.mjs --zapisz --potwierdz=maturalni_equipment
+```
+
+Operacja jest nieodwracalna, więc: domyślnie chodzi **na sucho**, zapis wymaga `--potwierdz=` z dokładną nazwą bazy (żeby nie dało się trafić nie w tę, co trzeba), a nagłówek wypisuje host i oznacza Atlasa.
+
+Zakres `magazyn` (domyślny) zdejmuje wyłącznie kartoteki kategorii magazynowych i ich rejestr — sprzęt, użytkownicy, wypożyczenia, licencje, mapa dostępów i wyjazdy zostają. Uwaga: `stockMoves`/`quants` są wspólne dla magazynu i sprzętu, więc kasowane są **po kodzie produktu**, nie w całości. Zakres `wszystko` czyści całą bazę poza `users` i `sessions` — bez tego nikt by się nie zalogował, żeby to naprawić.
 
 **Co się scala, a co nie.** Kartoteki o tej samej nazwie i tej samej kategorii (`G039` + `G046` „Arkusz polski e8") to jeden produkt kupiony w transzach — scalamy je, a każda kartoteka zostaje osobną partią cenową. Para Towar↔gadżet o tej samej nazwie (`T003` + `G060`) to **nie** duplikat, tylko ślad przetworzenia towaru w gadżet; te zostają osobno, bo inaczej znika historia przetworzeń i raport „prezenty ≤20 zł". Kody wchłonięte lądują w `items.mergedCodes` i są kaskadowo przepisane w ruchach, stanie i operacjach.
 
