@@ -26,7 +26,7 @@ import { personAccessHoldings } from './lib/access-queries.js';
 import { seedAccessMapDefaults } from './lib/access-seed.js';
 import { extractPdfText, extractItemsFromText, extractWarehouseItemsFromText } from './invoice-extract.js';
 import { matchInvoiceLines, normalizeInvoiceName } from './lib/invoice-match.js';
-import { replayStockAt, endOfDay } from './stock-history.js';
+import { replayStockAt, endOfDay, movePriceBatches } from './stock-history.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -1132,11 +1132,14 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
   )].sort((a, b) => String(a).localeCompare(String(b), 'pl'));
 
   // Ceny partii: pobierz operacje powiązane z ruchami, by odczytać ceny FIFO.
-  const operationIds = [...new Set(warehouseMoves.map(m => m.operationId).filter(Boolean))];
+  // `adjustmentDetail` i `importedFrom` są w projekcji nie bez powodu: korekty mają
+  // ceny tak samo jak wydania (m.in. wyrównanie do Odoo ADJ-WYR), a znacznik importu
+  // odróżnia „dokument nie niesie kosztu" od „cena wynosi zero".
+  const operationIds = [...new Set(warehouseMoves.map(m => String(m.operationId)).filter(Boolean))];
   const operations = operationIds.length
     ? await db.collection(collections.stockOperations)
         .find({ _id: { $in: operationIds.map(id => { try { return new ObjectId(id); } catch { return null; } }).filter(Boolean) } },
-          { projection: { type: 1, lines: 1, deliveryDetail: 1, scrapDetail: 1, conversionDetail: 1 } })
+          { projection: { type: 1, lines: 1, deliveryDetail: 1, scrapDetail: 1, conversionDetail: 1, adjustmentDetail: 1, importedFrom: 1 } })
         .toArray()
     : [];
   const opById = new Map(operations.map(o => [String(o._id), o]));
@@ -1147,29 +1150,8 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
     const toLoc = m.toLocationId ? locById.get(m.toLocationId) : null;
     const item = itemByCode.get(m.itemCode);
 
-    let priceBatches = null;
-    const op = m.operationId ? opById.get(m.operationId) : null;
-    if (op) {
-      if (op.type === 'receipt') {
-        const ln = (op.lines || []).find(l => l.itemCode === m.itemCode);
-        if (ln && ln.unitPrice != null) priceBatches = [{ qty: m.quantity, unitPrice: Number(ln.unitPrice) }];
-      } else if (op.type === 'delivery' && Array.isArray(op.deliveryDetail)) {
-        const d = op.deliveryDetail.find(x => x.itemCode === m.itemCode);
-        if (d?.consumed?.length) priceBatches = d.consumed.map(c => ({ qty: c.qty, unitPrice: c.unitPrice }));
-      } else if (op.type === 'scrap' && Array.isArray(op.scrapDetail)) {
-        const d = op.scrapDetail.find(x => x.itemCode === m.itemCode);
-        if (d?.consumed?.length) priceBatches = d.consumed.map(c => ({ qty: c.qty, unitPrice: c.unitPrice }));
-      } else if (op.type === 'conversion' && Array.isArray(op.conversionDetail)) {
-        const d = op.conversionDetail.find(x => x.sourceCode === m.itemCode || x.targetCode === m.itemCode);
-        if (d) {
-          if (d.sourceCode === m.itemCode && d.consumed?.length) {
-            priceBatches = d.consumed.map(c => ({ qty: c.qty, unitPrice: c.unitPrice }));
-          } else if (d.targetCode === m.itemCode && d.producedUnit != null) {
-            priceBatches = [{ qty: d.qty, unitPrice: d.producedUnit }];
-          }
-        }
-      }
-    }
+    const op = m.operationId ? opById.get(String(m.operationId)) : null;
+    const { batches: priceBatches, unpriced } = movePriceBatches(op, m);
 
     return {
       id: String(m._id),
@@ -1184,7 +1166,8 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
       actorEmail: m.actorEmail || null,
       note: m.note || '',
       doneAt: m.doneAt || m.createdAt || null,
-      priceBatches
+      priceBatches,
+      unpriced
     };
   });
 
@@ -1194,6 +1177,9 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
     ...summary,
     categories,
     rows,
+    // Ile ruchów nie da się wycenić, bo dokument przyszedł z importu historii Odoo.
+    // UI mówi to wprost — inaczej kolumna pełna kresek czyta się jak awaria raportu.
+    importedUnpriced: rows.filter(r => r.unpriced === 'import').length,
     truncated: warehouseMoves.length > LIMIT
   });
 });
@@ -1879,7 +1865,10 @@ async function loadOperationDetail(db, id) {
       lot: l.lot || null
     })),
     doneAt: op.doneAt || null,
-    createdAt: op.createdAt || null
+    createdAt: op.createdAt || null,
+    // Skąd dokument pochodzi. Potrzebne, bo pozycje odtworzone z Odoo nie mają cen
+    // i wydruk musi umieć powiedzieć dlaczego, zamiast drukować „0,00 zł".
+    importedFrom: op.importedFrom || null
   };
   return { status: 200, detail };
 }
@@ -2060,6 +2049,30 @@ app.post('/warehouse/operations/:id/cancel', requireAuth, requireAdmin, async (r
   if (op.state === 'done') return res.status(400).json({ message: 'Nie można anulować wykonanej operacji' });
   await db.collection(collections.stockOperations).updateOne({ _id: op._id }, { $set: { state: 'cancelled', updatedAt: new Date() } });
   res.json({ message: 'Anulowano' });
+});
+
+// Skasowanie wersji roboczej. „Anuluj" zostawia dokument z numerem na liście — to ma
+// sens dla dokumentu, który komuś obiecano i się nie wydarzył, ale nie dla wersji
+// roboczej otwartej na próbę: magazyn zgłosił, że lista zapełnia się dokumentami,
+// których nikt nie chciał. Warunek jest twardy: tylko `draft`, czyli dokument, który
+// nigdy nie ruszył stanu — wykonane i anulowane zostają, bo to już jest historia.
+app.delete('/warehouse/operations/:id', requireAuth, requireAdmin, async (req, res) => {
+  const db = await getDb();
+  let op;
+  try { op = await db.collection(collections.stockOperations).findOne({ _id: new ObjectId(req.params.id) }); }
+  catch { return res.status(400).json({ message: 'Niepoprawny identyfikator' }); }
+  if (!op) return res.status(404).json({ message: 'Operacja nie istnieje' });
+  if (op.state !== 'draft') {
+    return res.status(400).json({ message: 'Usunąć można tylko wersję roboczą — dokument z historią zostaje.' });
+  }
+  // Pas bezpieczeństwa: wersja robocza nie ma prawa mieć ruchów, ale gdyby kiedyś
+  // miała (błąd, ręczna zmiana stanu w bazie), kasowanie dokumentu osierociłoby rejestr.
+  const moves = await db.collection(collections.stockMoves).countDocuments({ operationId: String(op._id) }, { limit: 1 });
+  if (moves > 0) {
+    return res.status(409).json({ message: 'Dokument ma ruchy w rejestrze — zamiast usuwać, anuluj go.' });
+  }
+  await db.collection(collections.stockOperations).deleteOne({ _id: op._id });
+  res.json({ message: 'Usunięto wersję roboczą' });
 });
 
 // ----- Zapotrzebowanie (reguły min-max / orderpoint) -----

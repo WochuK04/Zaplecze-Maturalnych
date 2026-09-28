@@ -28,19 +28,32 @@ function fmtZl(n) {
   return `${(Number(n) || 0).toFixed(2).replace('.', ',')} zł`;
 }
 
+// Ilość na wydruku. Produkty na kilogramy mają stany ułamkowe, a `String(9.5)` daje
+// „9.5" — kropkę dziesiętną na polskim dokumencie idącym do księgowości.
+function fmtIlosc(n) {
+  return (Number(n) || 0).toLocaleString('pl-PL', { maximumFractionDigits: 3 });
+}
+
 // Konfiguracja kolumn tabeli pozycji zależnie od typu operacji. Szerokości sumują się
 // do ~495 pkt (A4, margines 50). Zwraca { columns:[{label,width,align}], rows:[[...]], totalValue }.
-function buildLinesTable(op) {
+export function buildLinesTable(op) {
   const lines = Array.isArray(op.lines) ? op.lines : [];
 
   if (op.type === 'receipt') {
     let totalValue = 0;
+    let priced = 0;
     const rows = lines.map(l => {
       const qty = Number(l.quantity) || 0;
-      const price = Number(l.unitPrice) || 0;
+      // Brak ceny to NIE zero. Dokumenty odtworzone z historii Odoo nie mają kosztu
+      // w pozycjach, a drukowanie „0,00 zł" robiło z tego cenę zakupu — dokument szedł
+      // do księgowości i wyglądał, jakby towar przyszedł za darmo.
+      const hasPrice = l.unitPrice != null && Number.isFinite(Number(l.unitPrice));
+      if (!hasPrice) return [l.itemCode || '', l.itemName || '', fmtIlosc(qty), '—', '—'];
+      const price = Number(l.unitPrice);
       const value = qty * price;
       totalValue += value;
-      return [l.itemCode || '', l.itemName || '', String(qty), fmtZl(price), fmtZl(value)];
+      priced += 1;
+      return [l.itemCode || '', l.itemName || '', fmtIlosc(qty), fmtZl(price), fmtZl(value)];
     });
     return {
       columns: [
@@ -49,7 +62,7 @@ function buildLinesTable(op) {
         { label: 'Cena', width: 70, align: 'right' },
         { label: 'Wartość', width: 80, align: 'right' }
       ],
-      rows, totalValue
+      rows, totalValue, pricedLines: priced, unpricedLines: lines.length - priced
     };
   }
 
@@ -61,7 +74,7 @@ function buildLinesTable(op) {
         { label: 'Cel — gadżet', width: 90 }, { label: 'Nazwa celu', width: 120 }
       ],
       rows: lines.map(l => [
-        l.itemCode || '', l.itemName || '', String(Number(l.quantity) || 0),
+        l.itemCode || '', l.itemName || '', fmtIlosc(l.quantity),
         l.targetItemCode || '', l.targetName || ''
       ])
     };
@@ -76,7 +89,7 @@ function buildLinesTable(op) {
       ],
       rows: lines.map(l => [
         l.itemCode || '', l.itemName || '', l.locationName || op.toName || '—',
-        l.countedQty != null ? String(l.countedQty) : '—'
+        l.countedQty != null ? fmtIlosc(l.countedQty) : '—'
       ])
     };
   }
@@ -89,7 +102,7 @@ function buildLinesTable(op) {
       { label: 'Partia', width: 80 }
     ],
     rows: lines.map(l => [
-      l.itemCode || '', l.itemName || '', String(Number(l.quantity) || 0), l.lot || '—'
+      l.itemCode || '', l.itemName || '', fmtIlosc(l.quantity), l.lot || '—'
     ])
   };
 }
@@ -172,7 +185,7 @@ export function renderOperationPdf(doc, op) {
   doc.font('Bold').fontSize(12).fillColor('#000000').text('Pozycje');
   doc.moveDown(0.3);
 
-  const { columns, rows, totalValue } = buildLinesTable(op);
+  const { columns, rows, totalValue, pricedLines, unpricedLines } = buildLinesTable(op);
   const startY = doc.y;
   let endY = startY;
   if (rows.length) {
@@ -183,11 +196,27 @@ export function renderOperationPdf(doc, op) {
     endY = doc.y;
   }
 
-  // Suma wartości dla przyjęcia.
+  // Suma wartości dla przyjęcia. Gdy żadna pozycja nie ma ceny, suma „0,00 zł" byłaby
+  // fałszywa — piszemy wprost, że dokument przyszedł bez kosztów. Gdy ceny ma tylko
+  // część pozycji, suma jest prawdziwa, ale niepełna i musi to o sobie powiedzieć.
   if (op.type === 'receipt') {
-    const y = endY + 6;
+    let y = endY + 6;
+    const podsumowanie = pricedLines === 0 && unpricedLines > 0
+      ? 'Razem (wartość zakupu): brak danych'
+      : `Razem (wartość zakupu): ${fmtZl(totalValue)}`;
     doc.font('Bold').fontSize(11).fillColor('#000000')
-      .text(`Razem (wartość zakupu): ${fmtZl(totalValue)}`, left, y, { width: right - left, align: 'right' });
+      .text(podsumowanie, left, y, { width: right - left, align: 'right' });
+
+    if (unpricedLines > 0) {
+      y = doc.y + 2;
+      const ile = pricedLines === 0 ? 'Dokument nie zawiera cen' : `${unpricedLines} z ${rows.length} pozycji jest bez ceny`;
+      // Powód podajemy tylko wtedy, gdy go znamy. Przyjęcie wystawione w zapleczu może
+      // nie mieć ceny z zupełnie innego powodu i zmyślanie tu wyjaśnienia byłoby gorsze
+      // niż jego brak.
+      const powod = op.importedFrom ? ' — historia odtworzona z Odoo, której eksport nie niesie kosztu zakupu.' : '.';
+      doc.font('Sans').fontSize(9).fillColor('#666666')
+        .text(`${ile}${powod}`, left, y, { width: right - left, align: 'right' });
+    }
   }
 
   // Podpisy na dole strony.
