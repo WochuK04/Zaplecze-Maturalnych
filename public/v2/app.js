@@ -755,21 +755,31 @@
       }
     },
     quickProduct: {
-      eyebrow: 'Magazyn · Konwersja', title: 'Nowy produkt (cel konwersji)',
-      hint: 'Utwórz produkt magazynowy, na który przetwarzasz. Koszt przeniesie sama konwersja.', cta: 'Utwórz',
-      fields: () => `<div class="field-2">
+      eyebrow: 'Magazyn · Operacje',
+      title: (ctx) => (ctx.field === 'itemCode' ? 'Nowy produkt' : 'Nowy produkt (cel konwersji)'),
+      hint: (ctx) => (ctx.field === 'itemCode'
+        ? 'Kartoteka dla towaru, którego jeszcze nie ma w Magazynie. Stan i koszt dopisze samo przyjęcie.'
+        : 'Utwórz produkt magazynowy, na który przetwarzasz. Koszt przeniesie sama konwersja.'),
+      cta: 'Utwórz',
+      // Kategoria jako lista, nie wolny tekst: endpoint odrzuca wszystko spoza
+      // kategorii Magazynu, a literówka kończyła się błędem dopiero po wysłaniu.
+      fields: (ctx) => {
+        const domyslna = ctx.field === 'itemCode' ? 'Towar' : 'gadżet';
+        const kat = MAG_KATEGORIE.map((k) => `<option value="${esc(k)}"${k === domyslna ? ' selected' : ''}>${esc(k)}</option>`).join('');
+        return `<div class="field-2">
         <label class="field"><span>Nazwa *</span><input name="name" placeholder="np. Zestaw powitalny"></label>
-        <label class="field"><span>Kategoria</span><input name="category" value="Gadżet" placeholder="np. Gadżet"></label>
+        <label class="field"><span>Kategoria</span><select name="category">${kat}</select></label>
       </div>
-      <label class="field"><span>Jednostka</span>${unitSelect('name="unit"')}</label>`,
+      <label class="field"><span>Jednostka</span>${unitSelect('name="unit"')}</label>`;
+      },
       submit: async (data, ctx) => {
         if (!data.name) throw new Error('Podaj nazwę produktu.');
-        const res = await api('/warehouse/products', { method: 'POST', body: JSON.stringify({ name: data.name, category: data.category || 'Gadżet', unit: data.unit }) });
+        const res = await api('/warehouse/products', { method: 'POST', body: JSON.stringify({ name: data.name, category: data.category || 'Towar', unit: data.unit }) });
         state.mag.formData = state.mag.formData || { items: [] };
         (state.mag.formData.items = state.mag.formData.items || []).push({ itemCode: res.itemCode, name: res.name, category: res.category, unit: res.unit, onHand: 0, reserved: 0, available: 0 });
-        if (opEdit.lines[ctx.idx]) opEdit.lines[ctx.idx].targetItemCode = res.itemCode;
+        if (opEdit.lines[ctx.idx]) opEdit.lines[ctx.idx][ctx.field || 'targetItemCode'] = res.itemCode;
         renderOpLines();
-        toast('Utworzono produkt: ' + res.name);
+        toast('Utworzono produkt: ' + res.name + ' (' + res.itemCode + ')');
       }
     },
     magInvoice: {
@@ -1772,6 +1782,10 @@
   }
 
   // -------------------------------------------------------------- Magazyn
+  // Kategorie Magazynu — dokładnie te przyjmuje POST /warehouse/products
+  // (src/lib/categories.js). Lista, nie wolny tekst, żeby literówka nie kończyła
+  // się błędem dopiero po wysłaniu formularza.
+  const MAG_KATEGORIE = ['Towar', 'gadżet', 'opakowanie', 'sponsor'];
   const OP_STATE = { draft: 'Wersja robocza', ready: 'Gotowe', done: 'Zatwierdzono', cancelled: 'Anulowano' };
   const MOVE_KIND = { receipt: 'Przyjęcie', delivery: 'Wydanie', internal: 'Przesunięcie', scrap: 'Odpad', adjustment: 'Korekta', conversion: 'Konwersja', in: 'Przyjęcie', out: 'Wydanie' };
   const LOC_KIND = { view: 'Grupa', internal: 'Magazyn', employee: 'U pracownika', customer: 'Klienci', supplier: 'Dostawcy', transit: 'Tranzyt', inventory: 'Inwentaryzacja', scrap: 'Odpad' };
@@ -2114,7 +2128,7 @@
         ? `<input data-line-field="countedQty" data-idx="${i}" type="number" min="0" step="any" value="${l.countedQty != null ? l.countedQty : ''}" placeholder="policzono" style="width:90px;">${uTag}`
         : `<input data-line-field="quantity" data-idx="${i}" type="number" min="0" step="any" value="${l.quantity != null ? l.quantity : ''}" placeholder="ilość" style="width:80px;">${uTag}`;
       return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
-        <select data-line-field="itemCode" data-idx="${i}" style="flex:1;min-width:140px;">${itemOpts(l.itemCode, t === 'conversion')}</select>
+        <select data-line-field="itemCode" data-idx="${i}" style="flex:1;min-width:140px;">${itemOpts(l.itemCode, t === 'conversion', t === 'receipt')}</select>
         ${t === 'conversion' ? extra : ''}${qtyField}${t === 'receipt' ? extra : ''}
         <button class="x-btn" data-op-delline="${i}" style="width:32px;height:32px;flex-shrink:0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </div>`;
@@ -2123,19 +2137,24 @@
     $$('[data-line-field]').forEach((el) => { el.style.border = '1px solid var(--line-2)'; el.style.borderRadius = '9px'; el.style.padding = '9px 11px'; el.style.fontSize = '13.5px'; el.style.background = 'var(--surface)'; el.style.color = 'var(--ink)'; el.style.outline = 'none'; });
     // Konwersja: wybór „＋ Nowy produkt…" w celu → szybkie utworzenie produktu.
     $$('[data-line-field="targetItemCode"]', wrap).forEach((sel) => sel.addEventListener('change', () => {
-      if (sel.value === '__new__') { sel.value = ''; openQuickProduct(Number(sel.dataset.idx)); }
+      if (sel.value === '__new__') { sel.value = ''; openQuickProduct(Number(sel.dataset.idx), 'targetItemCode'); }
     }));
-    // Zmiana produktu zmienia jednostkę przy polu ilości — przerysuj pozycje.
+    // Przyjęcie: „＋ Nowy produkt…" zakłada kartotekę bez wychodzenia z dokumentu —
+    // przy dostawie regularnie przychodzi towar, którego jeszcze nie ma w bazie.
+    // Poza tym zmiana produktu zmienia jednostkę przy polu ilości, więc przerysowujemy.
     $$('[data-line-field="itemCode"]', wrap).forEach((sel) => sel.addEventListener('change', () => {
+      if (sel.value === '__new__') { sel.value = ''; openQuickProduct(Number(sel.dataset.idx), 'itemCode'); return; }
       readOpLinesFromDOM(); renderOpLines();
     }));
   }
 
   // Szybkie utworzenie produktu-celu konwersji (POST /warehouse/products), po czym
   // wpina go w tę pozycję i odświeża listy. Odpowiednik „__new__" z v1.
-  function openQuickProduct(idx) {
+  // `field` mówi, którą stronę pozycji uzupełniamy: `itemCode` (produkt przyjmowany)
+  // albo `targetItemCode` (cel konwersji).
+  function openQuickProduct(idx, field = 'targetItemCode') {
     readOpLinesFromDOM(); // zachowaj bieżące pozycje przed re-renderem
-    openSheet('quickProduct', { idx });
+    openSheet('quickProduct', { idx, field });
   }
 
   function readOpLinesFromDOM() {
