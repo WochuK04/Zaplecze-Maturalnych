@@ -1974,18 +1974,60 @@
       <div class="drawer-foot"><button class="btn btn-ghost" data-op-pdf="${esc(op.id)}">PDF</button>${canReverse ? `<button class="btn btn-ghost" style="flex:1;" data-op-reverse="${esc(op.id)}">Cofnij do roboczej</button>` : ''}<button class="btn btn-ghost" ${canReverse ? '' : 'style="flex:1;"'} data-close-drawer>Zamknij</button></div>`;
   }
 
+  // Podpowiedzi do pola „Kontakt": kontakty użyte wcześniej na dokumentach TEGO typu.
+  // Nie ograniczają wpisu — to zwykły <datalist> — mają tylko powstrzymać rozjazd
+  // pisowni, przez który „TI Warszawa" i „TI warszawa" byłyby dwoma odbiorcami.
+  function podpowiedziKontaktu(form, typ) {
+    const wg = (form && form.contactsByType) || {};
+    const lista = [...new Set(wg[typ] || [])].slice(0, 100);
+    return lista.map((v) => `<option value="${esc(v)}"></option>`).join('');
+  }
+
   function renderOpEditor(box, op, form) {
     const t = op.type;
     // W selectach nagłówka doklejamy „＋ Nowa…" — jak „＋ Nowy produkt…" przy konwersji.
     // Planista nie musi wychodzić do Konfiguracji, żeby dopisać brakującą lokalizację.
-    const locOpts = (sel) => optList(form.locations, (l) => l.id, (l) => l.name, sel) + '<option value="__new__">＋ Nowa lokalizacja…</option>';
+    // Jeśli dokument stoi na lokalizacji, której nie ma na liście wyboru, DOKŁADAMY ją
+    // jako opcję zamiast pozwolić przeglądarce wskazać pierwszą z brzegu. Bez tego
+    // select zgłasza cudzą wartość, a zapis nagłówka po cichu podmienia lokalizację
+    // dokumentu — tak ginęły dostawy, którym cel „Wydania / odbiorcy" zamieniał się
+    // w „Magazyn". Nazwę bierzemy z dokumentu (`fromName`/`toName`), bo tylko on ją zna.
+    const locOpts = (sel, nazwaZDokumentu) => {
+      const znana = form.locations.some((l) => l.id === sel);
+      const brakujaca = sel && !znana
+        ? `<option value="${esc(sel)}" selected>${esc(nazwaZDokumentu || 'lokalizacja spoza listy')}</option>`
+        : '';
+      return brakujaca + optList(form.locations, (l) => l.id, (l) => l.name, sel) + '<option value="__new__">＋ Nowa lokalizacja…</option>';
+    };
     const supOpts = (sel) => '<option value="">— brak —</option>' + optList(form.suppliers, (s) => s.id, (s) => s.name, sel) + '<option value="__new__">＋ Nowy dostawca…</option>';
-    const dstOpts = (sel) => '<option value="">— brak —</option>' + optList(form.deliveryDestinations, (d) => d.id, (d) => d.name, sel) + '<option value="__new__">＋ Nowe miejsce dostawy…</option>';
+    // Przy dostawie NIE ma już osobnego „Miejsca dostawy". Na 47 dostawach w bazie
+    // wypełniono je 0 razy, a słownik miejsc stoi pusty — odbiorca od zawsze ląduje
+    // w „Kontakcie" („TI Warszawa", „Turbo weekend Vip"). Dwa pola na jedną informację
+    // to nie wybór, tylko zgadywanka, w które wpisać.
     const partyField = t === 'receipt'
       ? `<label class="field"><span>Dostawca</span><select data-op-h="supplierId">${supOpts(op.supplierId)}</select></label>`
-      : t === 'delivery'
-        ? `<label class="field"><span>Miejsce dostawy</span><select data-op-h="destinationId">${dstOpts(op.destinationId)}</select></label>`
-        : '';
+      : '';
+
+    // Lokalizacje: przy przyjęciu, dostawie i konwersji są zawsze te same (0 zmian na
+    // 118 dokumentach), a stanowią połowę formularza. Model ich potrzebuje — każdy ruch
+    // ma dwie strony jak w księgowości — ale użytkownik nie musi ich oglądać. Zwijamy je
+    // i pokazujemy wybór wprost w podsumowaniu, żeby dało się sprawdzić bez klikania.
+    // Przy przesunięciu i inwentarzu zostają otwarte: tam wybór lokalizacji JEST operacją.
+    const staleLokalizacje = t === 'receipt' || t === 'delivery' || t === 'conversion';
+    const nazwaLok = (id, zDokumentu) => zDokumentu || (form.locations.find((l) => l.id === id) || {}).name || '—';
+    const polaLokalizacji = `<div class="field-2">
+            <label class="field"><span>Z lokalizacji</span><select data-op-h="fromLocationId">${locOpts(op.fromLocationId, op.fromName)}</select></label>
+            <label class="field"><span>Do lokalizacji</span><select data-op-h="toLocationId">${locOpts(op.toLocationId, op.toName)}</select></label>
+          </div>`;
+    const blokLokalizacji = staleLokalizacje
+      ? `<details class="op-locations" style="margin-bottom:14px;">
+          <summary style="cursor:pointer;font-size:13px;color:var(--muted);list-style:none;">
+            Lokalizacje: <strong style="color:var(--ink);">${esc(nazwaLok(op.fromLocationId, op.fromName))}</strong> → <strong style="color:var(--ink);">${esc(nazwaLok(op.toLocationId, op.toName))}</strong>
+            <span style="opacity:.7;"> · zmień</span>
+          </summary>
+          <div style="margin-top:10px;">${polaLokalizacji}</div>
+        </details>`
+      : polaLokalizacji;
     box.innerHTML = `
       <div class="drawer-head"><div class="tags"><span class="chip chip-blue">${esc(op.typeLabel)}</span><span class="chip chip-orange">${esc(OP_STATE[op.state] || op.state)}</span></div>
         <button class="x-btn" data-close-drawer><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button></div>
@@ -1993,12 +2035,9 @@
         <h2>${esc(op.reference)}</h2>
         <p class="sub">Wersja robocza — uzupełnij pozycje i zatwierdź.</p>
         <div class="sheet-fields" style="margin-bottom:18px;">
-          <div class="field-2">
-            <label class="field"><span>Z lokalizacji</span><select data-op-h="fromLocationId">${locOpts(op.fromLocationId)}</select></label>
-            <label class="field"><span>Do lokalizacji</span><select data-op-h="toLocationId">${locOpts(op.toLocationId)}</select></label>
-          </div>
+          ${blokLokalizacji}
           ${partyField}
-          <label class="field"><span>Kontakt</span><input data-op-h="contact" value="${esc(op.contact || '')}" placeholder="np. dostawca / pracownik"></label>
+          <label class="field"><span>${t === 'delivery' ? 'Odbiorca' : 'Kontakt'}</span><input data-op-h="contact" list="op-kontakty" value="${esc(op.contact || '')}" placeholder="${t === 'delivery' ? 'np. TI Warszawa, Turbo weekend VIP' : 'np. dostawca / pracownik'}"><datalist id="op-kontakty">${podpowiedziKontaktu(form, t)}</datalist></label>
           <label class="field"><span>Dokument źródłowy</span><input data-op-h="sourceDocument" value="${esc(op.sourceDocument || '')}" placeholder="np. nr faktury"></label>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><div style="font-size:13px;font-weight:600;color:var(--ink);">Pozycje</div><button class="btn btn-ghost btn-sm" data-op-addline>+ Dodaj</button></div>
@@ -2086,8 +2125,11 @@
   // „＋ Nowa…" w selectach nagłówka. Po wyborze przywracamy poprzednią wartość i
   // otwieramy sheet — dzięki temu anulowanie nie zostawia selecta na „__new__".
   function bindQuickHeaderPickers() {
+    // `destinationId` wypadło: dostawa nie ma już pola „Miejsce dostawy" (odbiorca
+    // jedzie w „Kontakcie"). Słownik miejsc zostaje w Konfiguracji, bo dokumenty
+    // sprzed zmiany mogą się do niego odwoływać.
     [['fromLocationId', 'quickLocation'], ['toLocationId', 'quickLocation'],
-     ['destinationId', 'quickDestination'], ['supplierId', 'quickSupplier']]
+     ['supplierId', 'quickSupplier']]
       .forEach(([field, sheet]) => {
         const sel = $(`[data-op-h="${field}"]`);
         if (!sel) return;

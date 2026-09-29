@@ -1641,9 +1641,16 @@ app.delete('/warehouse/delivery-destinations/:id', requireAuth, requireAdmin, as
 
 // ----- Operacje magazynowe (dokumenty: Przekazy + Korekty) -----
 
+// Lokalizacje, które wolno wybrać w dokumencie. Muszą tu być WSZYSTKIE domyślne
+// lokalizacje z OPERATION_TYPES — inaczej select nie ma opcji odpowiadającej wartości
+// dokumentu, przeglądarka zgłasza pierwszą z brzegu, a zapis nagłówka po cichu
+// podmienia lokalizację. Brakowało `CUSTOMER`, czyli celu KAŻDEJ dostawy: otwarcie
+// dostawy i kliknięcie „Zatwierdź" przestawiało ją z „Magazyn → Wydania / odbiorcy"
+// na „Magazyn → Magazyn", więc towar nigdy nie opuszczał magazynu.
 const OPERATION_LOC_KINDS = [
   LOCATION_KINDS.INTERNAL, LOCATION_KINDS.EMPLOYEE,
-  LOCATION_KINDS.SUPPLIER, LOCATION_KINDS.SCRAP, LOCATION_KINDS.INVENTORY, LOCATION_KINDS.TRANSIT
+  LOCATION_KINDS.SUPPLIER, LOCATION_KINDS.CUSTOMER, LOCATION_KINDS.SCRAP,
+  LOCATION_KINDS.INVENTORY, LOCATION_KINDS.TRANSIT
 ];
 
 function normalizeOperationLines(type, rawLines) {
@@ -1722,6 +1729,25 @@ app.get('/warehouse/form-data', requireAuth, requireWarehouseRead, async (_req, 
   const destinations = await db.collection(collections.deliveryDestinations)
     .find({ isActive: { $ne: false } }).sort({ name: 1 }).toArray();
 
+  // Kontakty użyte wcześniej — do podpowiedzi przy wpisywaniu odbiorcy/dostawcy.
+  // Pole „Kontakt" jest wolnym tekstem i tak zostaje, bo tak się nim realnie posługują
+  // („TI Warszawa", „Turbo weekend Vip"). Podpowiedzi mają tylko zapobiec temu, żeby ten
+  // sam odbiorca istniał w bazie w trzech pisowniach — bez zmuszania kogokolwiek do
+  // zakładania słownika. Grupujemy per typ dokumentu: odbiorcy i dostawcy to inne listy.
+  const kontakty = await db.collection(collections.stockOperations).aggregate([
+    { $match: { contact: { $type: 'string', $ne: '' } } },
+    { $group: { _id: { type: '$type', contact: '$contact' }, ostatni: { $max: '$createdAt' } } },
+    { $sort: { ostatni: -1 } },
+    { $limit: 400 }
+  ]).toArray();
+  const contactsByType = {};
+  for (const k of kontakty) {
+    const t = k._id.type;
+    const v = String(k._id.contact || '').trim();
+    if (!t || !v) continue;
+    (contactsByType[t] = contactsByType[t] || []).push(v);
+  }
+
   // Dostępny stan na Magazynie (WH/Stock) per produkt — do podpowiedzi „dostępne: N"
   // i blokady nadmiaru przy konwersji. `available` = on-hand − rezerwacje (otwarte
   // wydania), żeby planista widział wolny stan, nie surowy on-hand.
@@ -1745,6 +1771,7 @@ app.get('/warehouse/form-data', requireAuth, requireWarehouseRead, async (_req, 
     }),
     suppliers: suppliers.map(s => ({ id: String(s._id), name: s.name || '' })),
     deliveryDestinations: destinations.map(d => ({ id: String(d._id), name: d.name || '' })),
+    contactsByType,
     types: OPERATION_TYPES,
     units: UNITS
   });
