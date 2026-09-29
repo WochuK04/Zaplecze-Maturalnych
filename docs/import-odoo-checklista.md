@@ -25,6 +25,17 @@ i ma się kurczyć, nie rosnąć.
       (1 szt. = 10 kg), wtedy przelicznik po naszej stronie znika.
 - [ ] `G041` — kod użyty w Odoo dwa razy („Krówki matura" zarchiwizowane
       i „Planer 8 mies mat" aktywny). Import bierze aktywny i zgłasza konflikt.
+- [ ] **Kartoteki ze stanem, ale zerowym kosztem.** Na 29.09.2026 było ich 20
+      (m.in. Owolovo galaretka 1300 szt., mus owolovo 942, Karteczki
+      samoprzylepne 600, Karton fasonowy niebieski mat 562). Koszt jest jedynym
+      źródłem kwot, jakie Odoo w ogóle ma — bez niego pozycja nie da się wycenić
+      ani w raportach, ani na wydruku. Aktualną listę wyciąga
+      `Materiały do gitignore/odoo-sonda.mjs`.
+
+**Nie szukaj w Odoo faktur — nie ma ich tam.** Instalacja ma wyłącznie moduł
+Magazyn: brak księgowości, zakupów, sprzedaży i wyceny zapasów, a
+`stock.move.price_unit` jest zerowe. Szczegóły i tabela sprawdzonych modeli:
+sekcja „Co Odoo wie o kwotach" w [README](../README.md#synchronizacja-z-odoo).
 
 ## 2. Pobranie danych
 
