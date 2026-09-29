@@ -14,6 +14,16 @@ chodzą domyślnie **na sucho** — bez `--zapisz` nic nie zmieniają.
 set -a && source "Materiały do gitignore/atlas.env" && set +a
 ```
 
+Jeśli to poleci błędem `parse error near '&'`, to znaczy, że `MONGODB_URI` w pliku
+nie jest w cudzysłowie, a URI Atlasa zawiera `&` — powłoka rozcina je na osobne
+polecenia. Albo obejmij wartość cudzysłowem w `atlas.env`, albo podaj zmienne wprost:
+
+```bash
+URI=$(grep '^MONGODB_URI=' "Materiały do gitignore/atlas.env" | cut -d= -f2-)
+DBN=$(grep '^DB_NAME=' "Materiały do gitignore/atlas.env" | cut -d= -f2-)
+MONGODB_URI="$URI" DB_NAME="$DBN" node scripts/<skrypt>.mjs
+```
+
 ## 1. Poprawki, które warto wcześniej załatwić w Odoo
 
 Każda z nich pozwala usunąć wpis z `src/odoo-poprawki.js` — plik jest plastrem
@@ -63,6 +73,21 @@ node scripts/odoo-od-zera.mjs --zapisz --potwierdz=maturalni_equipment
 ```
 
 `--potwierdz` musi się zgadzać z nazwą bazy co do znaku.
+
+## 5b. Koszty kartotek bez stanu
+
+Import zakłada teraz partię o ilości 0 dla kartotek, które w Odoo mają koszt, ale
+nie mają stanu — bez niej cała historia takiego produktu zostawała bez wyceny
+(`src/odoo.js`). Pełny import robi to sam; ten skrypt jest do uzupełnienia bazy
+**między importami**:
+
+```bash
+node scripts/odoo-koszty-bez-stanu.mjs                                   # na sucho
+node scripts/odoo-koszty-bez-stanu.mjs --zapisz --potwierdz=maturalni_equipment
+```
+
+Dotyka wyłącznie produktów Magazynu bez ani jednej partii cenowej. Nie zmienia
+ilości, nie tworzy ruchów, pomija kartoteki, których Odoo nie wycenia.
 
 ## 6. Normalizacja kodów sprzętu
 

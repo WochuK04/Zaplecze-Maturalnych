@@ -61,7 +61,7 @@ test('mergeProducts NIE scala towaru z gadżetem, mimo tej samej nazwy', () => {
   assert.ok(out.every((p) => p.mergedCodes.length === 0));
 });
 
-test('mergeProducts zachowuje kod pustej kartoteki w mergedCodes, ale bez partii', () => {
+test('mergeProducts zachowuje kod pustej kartoteki w mergedCodes', () => {
   const out = mergeProducts([
     { kod: 'G009', nazwa: 'Kubek E8', kategoria: 'gadżet', stan: 109, koszt: 3 },
     { kod: 'G008', nazwa: 'Kubek E8', kategoria: 'gadżet', stan: 0, koszt: 5 }
@@ -69,7 +69,51 @@ test('mergeProducts zachowuje kod pustej kartoteki w mergedCodes, ale bez partii
   assert.equal(out[0].itemCode, 'G009');
   assert.deepEqual(out[0].mergedCodes, ['G008']);
   assert.equal(out[0].quantity, 109);
-  assert.equal(out[0].priceBatches.length, 1);
+});
+
+// Odoo trzyma koszt na kartotece niezależnie od stanu, a historia ruchów sięga czasów,
+// gdy towar jeszcze był. Bez partii o ilości 0 cała ta historia zostawała bez wyceny —
+// dotyczyło to 37 kartotek, w tym „Biletu energylandia" za 193,52 zł.
+test('kartoteka bez stanu, ale z kosztem, daje partię o ilości 0', () => {
+  const out = mergeProducts([
+    { kod: 'T038', nazwa: 'Bilet energylandia', kategoria: 'Towar', stan: 0, koszt: 193.52 }
+  ]);
+  assert.equal(out.length, 1);
+  assert.equal(out[0].quantity, 0);
+  assert.deepEqual(
+    out[0].priceBatches.map(b => ({ qty: b.qty, unitPrice: b.unitPrice })),
+    [{ qty: 0, unitPrice: 193.52 }]
+  );
+});
+
+test('partia o ilości 0 nie dokłada się do stanu produktu', () => {
+  const out = mergeProducts([
+    { kod: 'G009', nazwa: 'Kubek E8', kategoria: 'gadżet', stan: 109, koszt: 3 },
+    { kod: 'G008', nazwa: 'Kubek E8', kategoria: 'gadżet', stan: 0, koszt: 5 }
+  ]);
+  assert.equal(out[0].quantity, 109);
+  assert.equal(out[0].priceBatches.length, 2);
+  assert.equal(out[0].priceBatches.reduce((s, b) => s + b.qty, 0), 109);
+});
+
+// Zerowa cena to nie to samo co nieznana. „Za darmo" musiałoby być prawdą, a nie jest.
+test('kartoteka bez stanu i bez kosztu nadal nie daje partii', () => {
+  const out = mergeProducts([
+    { kod: 'T020', nazwa: 'Planer na 35 tygodni', kategoria: 'Towar', stan: 0, koszt: 0 }
+  ]);
+  assert.equal(out[0].priceBatches.length, 0);
+});
+
+// Sponsor: dostajemy za 0 i wydajemy za 0 — zero jest poprawne, więc kartoteka
+// ze stanem wchodzi normalnie, z ceną zerową.
+test('sponsor ze stanem wchodzi jako partia po 0 zł', () => {
+  const out = mergeProducts([
+    { kod: 'S001', nazwa: 'Owolovo galaretka', kategoria: 'sponsor', stan: 1300, koszt: 0 }
+  ]);
+  assert.deepEqual(
+    out[0].priceBatches.map(b => ({ qty: b.qty, unitPrice: b.unitPrice })),
+    [{ qty: 1300, unitPrice: 0 }]
+  );
 });
 
 test('mergeProducts pomija wiersze bez kodu, nazwy lub kategorii', () => {

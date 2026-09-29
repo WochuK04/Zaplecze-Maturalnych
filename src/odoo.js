@@ -121,15 +121,27 @@ export function mergeProducts(kartoteki, { teraz = new Date() } = {}) {
     const wiodaca = pickCanonical(czlonkowie);
     const pozostale = czlonkowie.filter((c) => c.kod !== wiodaca.kod).sort((a, b) => compareCodes(a.kod, b.kod));
 
-    // Partia na kartotekę — tylko gdy jest co wyceniać. Kartoteka z zerowym stanem
-    // nie tworzy partii, ale jej kod zostaje w `mergedCodes`, żeby stare etykiety,
-    // ruchy i kody QR nadal się rozwiązywały.
+    // Partia na kartotekę. Kartoteka ze stanem wchodzi zawsze; kartoteka BEZ stanu,
+    // ale ze znanym kosztem, wchodzi jako partia o ilości 0.
+    //
+    // To drugie wygląda dziwnie, a jest konieczne: Odoo trzyma koszt na kartotece
+    // niezależnie od tego, czy coś na niej leży, a historia ruchów sięga wstecz — do
+    // czasów, gdy towar jeszcze był. Bez tej partii cała historia takiego produktu
+    // zostawała u nas bez wyceny, mimo że koszt był znany. Realnie dotyczyło to 37
+    // kartotek i samego „Biletu energylandia" za 193,52 zł (sprawdzone 29.09.2026).
+    //
+    // Partia zerowa nie zmienia żadnej sumy: wycena stanu, wiek zapasu i próg
+    // prezentów liczą wyłącznie partie o ilości > 0. Jej jedyną rolą jest podanie ceny
+    // kolejce FIFO (`newFifoQueue` zapamiętuje ją jako ostatnią znaną cenę warstwy).
+    //
+    // Kartoteki bez stanu I bez kosztu nadal partii nie dostają — zerowa cena
+    // wyglądałaby jak „towar za darmo", a to nieprawda, po prostu nie wiemy.
     const priceBatches = czlonkowie
       .slice()
       .sort((a, b) => compareCodes(a.kod, b.kod))
-      .filter((c) => c.stan > 0)
+      .filter((c) => c.stan > 0 || (Number(c.koszt) || 0) > 0)
       .map((c) => ({
-        qty: c.stan,
+        qty: c.stan > 0 ? c.stan : 0,
         unitPrice: Math.round((Number(c.koszt) || 0) * 100) / 100,
         note: `Odoo ${c.kod}`,
         addedAt: c.zaktualizowano instanceof Date ? c.zaktualizowano : teraz
