@@ -595,3 +595,11 @@ table.wtable tbody tr.click:hover{background:var(--surface-hover);}
 .wh-access { display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .wh-access input { width: 16px; height: 16px; accent-color: var(--accent, #5B6ABF); cursor: pointer; }
 .wh-access input:disabled { cursor: not-allowed; opacity: .55; }
+
+/* Zwinięte lokalizacje w edytorze operacji. Przy przyjęciu, dostawie i konwersji są
+   zawsze te same, więc domyślnie pokazujemy je jako jedną linijkę podsumowania —
+   rozwinięcie jest dla rzadkiego przypadku, gdy naprawdę trzeba je zmienić. */
+details.op-locations{border:1px solid var(--line-3);border-radius:10px;padding:9px 12px;}
+details.op-locations>summary{list-style:none;user-select:none;}
+details.op-locations>summary::-webkit-details-marker{display:none;}
+details.op-locations[open]>summary{margin-bottom:2px;}
