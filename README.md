@@ -129,7 +129,9 @@ Praktycznie znaczy to trzy rzeczy:
 
 - **W Odoo nie ma faktur.** Ani zakupowych, ani sprzedażowych — jeśli gdzieś są, to poza tym systemem. Nie ma więc czego z Odoo doimportować, żeby dokumenty dostały kwoty z faktur.
 - **Jedynym źródłem pieniędzy jest `product.template.standard_price`** — koszt kartoteki. To on wchodzi jako partia cenowa i to na nim stoi zarówno „Wycena stanu", jak i wycena ruchów historycznych (FIFO z partii, patrz `assignFifoPrices` w `src/stock-history.js`). Nie jest to obejście: niczego lepszego po tamtej stronie nie ma.
-- **Kartoteka bez kosztu w Odoo zostaje bez wyceny u nas** i tak ma być. Na 29.09.2026 takich kartotek ze stanem, ale zerowym kosztem, było 20 — to dziura w danych do uzupełnienia w Odoo, nie usterka importu.
+- **Kartoteka bez kosztu w Odoo zostaje bez wyceny u nas** i tak ma być. Na 29.09.2026 takich kartotek ze stanem, ale zerowym kosztem, było 20.
+
+**Zero zeru nierówne.** Cztery z tych dwudziestu to kategoria **sponsor** i tam koszt 0 jest poprawny, nie brakujący: towar sponsorski dostajemy za 0 i wydajemy za 0 (Owolovo — galaretka, mus, sok, deser). Wszystkie kartoteki sponsorskie w Odoo mają koszt zerowy i nie ma od tego wyjątków, więc zerowa wycena tej kategorii jest stanem docelowym — nie zgłaszaj jej jako braku danych i nie próbuj „naprawiać". Pozostałe 16 to faktyczna dziura do uzupełnienia po stronie Odoo.
 
 Zanim ktoś kolejny raz zacznie szukać kwot w Odoo: powtórz sondę zamiast zgadywać. Lista modeli i wynik z 29.09 leżą w `Materiały do gitignore/odoo-co-wie-o-kwotach.md`, a skrypt obok, w `odoo-sonda.mjs`. Biała lista w `scripts/odoo/rpc.mjs` ogranicza **metody** (tylko odczyt), a nie modele, więc sondowanie dowolnego modelu jest bezpieczne.
 
