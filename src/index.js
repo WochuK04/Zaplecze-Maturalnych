@@ -854,6 +854,7 @@ app.post('/warehouse/operations/from-invoice', requireAuth, requireAdmin, expres
       lines.push({
         itemCode,
         quantity,
+        lot: null,
         unitPrice: Number.isFinite(unitPrice) && unitPrice > 0 ? Math.round(unitPrice * 100) / 100 : 0
       });
     } else {
@@ -915,15 +916,23 @@ app.post('/warehouse/operations/from-invoice', requireAuth, requireAdmin, expres
     }
   }
 
-  const reference = await nextReference(db, 'receipt');
+  // Numer i pola jak przy ręcznym „Nowa operacja": prefiks typu (mag/IN), nie nazwa typu,
+  // oraz snapshot nazwy dostawcy — lista i szczegóły pokazują ją zamiast „—".
+  const reference = await nextReference(db, OPERATION_TYPES.receipt.prefix);
+  const supplier = await resolveSupplier(db, supplierId);
   const doc = {
     type: 'receipt',
     reference,
     state: 'draft',
     fromLocationId: supplierLoc ? String(supplierLoc._id) : null,
     toLocationId: stockLoc ? String(stockLoc._id) : null,
-    supplierId,
+    supplierId: supplier.supplierId,
+    supplierName: supplier.supplierName,
+    destinationId: null,
+    destinationName: '',
+    scheduledAt: null,
     contact: '',
+    note: '',
     sourceDocument: String(req.body.invoiceNumber || '').trim(),
     ...(invoiceFile ? { invoiceFile } : {}),
     lines,
@@ -1898,6 +1907,10 @@ async function loadOperationDetail(db, id) {
 
   const locations = await db.collection(collections.locations).find({}).toArray();
   const locById = new Map(locations.map(l => [String(l._id), l]));
+  // Wersja robocza po „Cofnij do roboczej" ma w rejestrze ruch i jego storno — nie da się
+  // jej skasować, więc edytor musi zamiast „Odrzuć" pokazać „Anuluj dokument".
+  const hasMoves = (await db.collection(collections.stockMoves)
+    .countDocuments({ operationId: String(op._id) }, { limit: 1 })) > 0;
   const codes = [...new Set((op.lines || []).flatMap(l => [l.itemCode, l.targetItemCode]).filter(Boolean))];
   const items = codes.length
     ? await db.collection(collections.items).find({ itemCode: { $in: codes } }, { projection: { itemCode: 1, name: 1, unit: 1, priceBatches: 1 } }).toArray()
@@ -1945,6 +1958,7 @@ async function loadOperationDetail(db, id) {
     // Ślad importu z faktury: edytor pokazuje niedopasowane pozycje osobną sekcją,
     // a zatwierdzenie jest zablokowane, dopóki lista nie jest pusta.
     fromInvoice: !!op.fromInvoice,
+    hasMoves,
     pendingInvoiceLines: Array.isArray(op.pendingInvoiceLines) ? op.pendingInvoiceLines : [],
     lines: (op.lines || []).map(l => ({
       itemCode: l.itemCode,
@@ -2143,6 +2157,13 @@ app.post('/warehouse/operations/:id/cancel', requireAuth, requireAdmin, async (r
   catch { return res.status(400).json({ message: 'Niepoprawny identyfikator' }); }
   if (!op) return res.status(404).json({ message: 'Operacja nie istnieje' });
   if (op.state === 'done') return res.status(400).json({ message: 'Nie można anulować wykonanej operacji' });
+  // Anulowanie nie cofa ruchów. Ruch bez storna na niewykonanym dokumencie (np. przerwane
+  // zatwierdzanie) zostawiłby stan magazynu z towarem, którego dokument już nie obejmuje.
+  const activeMoves = await db.collection(collections.stockMoves)
+    .countDocuments({ operationId: String(op._id), reversalOf: null, reversedAt: { $exists: false } }, { limit: 1 });
+  if (activeMoves > 0) {
+    return res.status(409).json({ message: 'Dokument ma ruchy w rejestrze bez storna — anulowanie zostawiłoby stan magazynu rozjechany. Skontaktuj się z administratorem.' });
+  }
   await db.collection(collections.stockOperations).updateOne({ _id: op._id }, { $set: { state: 'cancelled', updatedAt: new Date() } });
   res.json({ message: 'Anulowano' });
 });
