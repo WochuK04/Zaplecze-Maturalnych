@@ -27,7 +27,7 @@ import { fileURLToPath } from 'url';
 import { connectToDatabase, closeDb } from '../src/db.js';
 import { collections, ensureIndexes } from '../src/schema.js';
 import { seedStandardLocations, recomputeQuants, refreshItemCache } from '../src/stock.js';
-import { mergeProducts, normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, KOD_KOLIZJI } from '../src/odoo.js';
+import { mergeProducts, normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, KOD_KOLIZJI, odnosnikImportu } from '../src/odoo.js';
 import { isWarehouseCategory } from '../src/lib/categories.js';
 import { DEFAULT_UNIT } from '../src/lib/units.js';
 import { zastosujPoprawki, kodZNazwy, mnoznikDlaKodu } from '../src/odoo-poprawki.js';
@@ -272,7 +272,9 @@ for (const c of przetworzenia) {
   );
 }
 
-// 2) Zwykłe linie → jedna operacja na przekaz Odoo (mag/IN/00004, mag/OUT/00012…).
+// 2) Zwykłe linie → jedna operacja na przekaz Odoo (odoo/mag/IN/00004, odoo/mag/OUT/00012…).
+// Odnośnik dostaje przestrzeń `odoo/`, żeby seria importu nie zderzała się z serią
+// dokumentów zakładanych w Zapleczu — patrz odnosnikImportu w src/odoo.js.
 const wgPrzekazu = new Map();
 for (const l of zwykle) {
   const k = l.referencja || `bez-odnosnika/${l.when.toISOString().slice(0, 10)}/${l.kind}`;
@@ -287,7 +289,9 @@ for (const [ref, grupa] of wgPrzekazu) {
   const opId = newId();
   dokOps.push({
     _id: opId,
-    reference: ref,
+    reference: odnosnikImportu(ref),
+    // Oryginalny numer przekazu z Odoo — do zestawienia bez zaglądania do odnośnika.
+    odooReference: ref,
     type: typ,
     state: 'done',
     fromLocationId: idLok(grupa[0].fromKod) || null,
@@ -424,10 +428,10 @@ if (doWyrownania.length) {
 raport.operacje = dokOps.reduce((a, o) => ({ ...a, [o.type]: (a[o.type] || 0) + 1 }), {});
 raport.ruchow = dokMoves.length;
 
-// Liczniki numeracji muszą przeskoczyć za najwyższy zaimportowany numer.
-// Dokumenty z Odoo niosą własne odnośniki (`mag/IN/00056`), a `reference` ma
-// indeks unikalny — licznik zostawiony na zerze sprawiał, że pierwsza operacja
-// zakładana w aplikacji dostawała numer już zajęty i zapis się wywracał.
+// Liczniki numeracji dla serii, których użył import (`odoo/…`). Od czasu, gdy
+// dokumenty importu mają własną przestrzeń nazw, nie mogą już zderzyć się z serią
+// `mag/…` zakładaną w Zapleczu — ale licznik i tak ustawiamy, żeby ewentualny
+// dokument tworzony w tej samej serii ruszał od właściwego numeru.
 const maxNumeru = new Map();
 for (const o of dokOps) {
   const m = /^(.*)\/(\d+)$/.exec(String(o.reference || ''));
