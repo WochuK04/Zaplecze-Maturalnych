@@ -25,6 +25,7 @@ import { registerAccessRoutes } from './routes/accesses.js';
 import { personAccessHoldings } from './lib/access-queries.js';
 import { seedAccessMapDefaults } from './lib/access-seed.js';
 import { extractPdfText, extractItemsFromText, extractWarehouseItemsFromText } from './invoice-extract.js';
+import { isDriveConfigured, pdfBufferFromBase64, uploadInvoicePdf } from './drive.js';
 import { matchInvoiceLines, normalizeInvoiceName } from './lib/invoice-match.js';
 import { replayStockAt, endOfDay, movePriceBatches, assignFifoPrices, newFifoQueue, takeFifoLayers } from './stock-history.js';
 
@@ -49,6 +50,7 @@ const globalJson = express.json();
 app.use((req, res, next) => {
   if (req.path === '/admin/items/extract-invoice') return next();
   if (req.path === '/warehouse/extract-invoice') return next();
+  if (req.path === '/warehouse/operations/from-invoice') return next();
   return globalJson(req, res, next);
 });
 app.use(express.urlencoded({ extended: true }));
@@ -806,7 +808,7 @@ app.post(
 //   • brak `supplierId`, a jest `supplierName` -> dostawca zakładany automatycznie,
 //   • pozycje bez `itemCode` trafiają do `pendingInvoiceLines` i BLOKUJĄ zatwierdzenie,
 //   • ręczne wskazanie produktu dla nazwy z faktury zapisuje się jako alias.
-app.post('/warehouse/operations/from-invoice', requireAuth, requireAdmin, async (req, res) => {
+app.post('/warehouse/operations/from-invoice', requireAuth, requireAdmin, express.json({ limit: '12mb' }), async (req, res) => {
   const db = await getDb();
   const now = new Date();
 
@@ -892,6 +894,27 @@ app.post('/warehouse/operations/from-invoice', requireAuth, requireAdmin, async 
     db.collection(collections.locations).findOne({ code: 'WH/Stock' })
   ]);
 
+  // Kopia PDF na Drive. Błąd zapisu nie blokuje dokumentu — oddajemy ostrzeżenie.
+  let invoiceFile = null;
+  let invoiceFileWarning = null;
+  if (req.body.fileBase64) {
+    if (!isDriveConfigured()) {
+      invoiceFileWarning = 'Zapis faktur na Dysku nie jest skonfigurowany — dokument utworzono bez załącznika.';
+    } else {
+      try {
+        invoiceFile = await uploadInvoicePdf({
+          buffer: pdfBufferFromBase64(req.body.fileBase64),
+          invoiceDate: String(req.body.invoiceDate || '').trim(),
+          invoiceNumber: String(req.body.invoiceNumber || '').trim(),
+          supplier: supplierName
+        });
+      } catch (e) {
+        console.error('[drive] zapis faktury nieudany:', e.message);
+        invoiceFileWarning = 'Nie udało się zapisać PDF na Dysku (' + e.message + '). Dokument utworzono bez załącznika.';
+      }
+    }
+  }
+
   const reference = await nextReference(db, 'receipt');
   const doc = {
     type: 'receipt',
@@ -902,6 +925,7 @@ app.post('/warehouse/operations/from-invoice', requireAuth, requireAdmin, async 
     supplierId,
     contact: '',
     sourceDocument: String(req.body.invoiceNumber || '').trim(),
+    ...(invoiceFile ? { invoiceFile } : {}),
     lines,
     // Ślad pochodzenia: dokument powstał z faktury, a te pozycje wciąż nie mają produktu.
     fromInvoice: true,
@@ -919,6 +943,8 @@ app.post('/warehouse/operations/from-invoice', requireAuth, requireAdmin, async 
     pendingCount: pending.length,
     supplierId,
     supplierCreated,
+    invoiceFile: invoiceFile ? { name: invoiceFile.name, webViewLink: invoiceFile.webViewLink } : null,
+    invoiceFileWarning,
     message: pending.length
       ? `Utworzono ${reference}. ${pending.length} ${pending.length === 1 ? 'pozycja czeka' : 'pozycji czeka'} na wskazanie produktu.`
       : `Utworzono ${reference} z ${lines.length} pozycjami.`
@@ -1914,6 +1940,7 @@ async function loadOperationDetail(db, id) {
     destinationName: op.destinationName || '',
     scheduledAt: op.scheduledAt || null,
     sourceDocument: op.sourceDocument || '',
+    invoiceFile: op.invoiceFile ? { name: op.invoiceFile.name, webViewLink: op.invoiceFile.webViewLink } : null,
     note: op.note || '',
     // Ślad importu z faktury: edytor pokazuje niedopasowane pozycje osobną sekcją,
     // a zatwierdzenie jest zablokowane, dopóki lista nie jest pusta.

@@ -797,6 +797,10 @@
         const rows = readInvoiceRows();
         if (!rows.length) throw new Error('Najpierw wczytaj plik PDF faktury.');
         const meta = ctx.invoiceMeta || {};
+        // Vercel tnie body ~4.5 MB, a base64 puchnie o 1/3 — większy plik pomijamy,
+        // żeby nie stracić całego importu.
+        const file = ctx.invoiceFile;
+        const attach = file && file.size <= 3000000 ? file : null;
         const res = await api('/warehouse/operations/from-invoice', {
           method: 'POST',
           body: JSON.stringify({
@@ -804,10 +808,14 @@
             supplierName: meta.supplier || '',
             invoiceNumber: meta.invoiceNumber || '',
             invoiceDate: meta.invoiceDate || '',
-            lines: rows
+            lines: rows,
+            ...(attach ? { fileBase64: attach.dataUrl } : {})
           })
         });
         toast(res.message || ('Utworzono ' + res.reference));
+        if (file && !attach) toast('Plik PDF ma ponad 3 MB — dokument utworzono bez załącznika na Dysku.', true);
+        if (res.invoiceFileWarning) toast(res.invoiceFileWarning, true);
+        else if (res.invoiceFile) toast('Faktura zapisana na Dysku Google.');
         if (res.supplierCreated) toast('Założono dostawcę: ' + (meta.supplier || ''));
         afterOpChange();
         setTimeout(() => openOpEditor(res.id), 60);
@@ -1965,6 +1973,7 @@
         <div class="kv-grid">
           <div class="kv"><div class="k">Kontakt</div><div class="v">${esc(op.supplierName || op.contact || '—')}</div></div>
           <div class="kv"><div class="k">Dokument</div><div class="v">${esc(op.sourceDocument || '—')}</div></div>
+          ${op.invoiceFile && op.invoiceFile.webViewLink ? `<div class="kv"><div class="k">Faktura (PDF)</div><div class="v"><a href="${esc(op.invoiceFile.webViewLink)}" target="_blank" rel="noopener">Otwórz na Dysku</a></div></div>` : ''}
           <div class="kv"><div class="k">Utworzono</div><div class="v">${esc(fmtDay(op.createdAt) || '—')}</div></div>
           <div class="kv"><div class="k">${esc(etykietaDaty(op.type))}</div><div class="v">${esc(fmtDay(op.doneAt) || '—')}</div></div>
         </div>
@@ -3870,6 +3879,7 @@
     }
     const listEl = $('#sheetForm [data-mag-invoice-list]');
     if (listEl) listEl.innerHTML = '';
+    if (currentSheet && currentSheet.type === 'magInvoice') currentSheet.ctx.invoiceFile = null;
     if (statusEl) statusEl.textContent = 'Czytam fakturę… to potrwa kilka sekund.';
     const reader = new FileReader();
     reader.onerror = () => { if (statusEl) statusEl.textContent = 'Nie udało się odczytać pliku.'; };
@@ -3884,6 +3894,7 @@
             supplier: res.supplier, supplierId: res.supplierId,
             invoiceNumber: res.invoiceNumber, invoiceDate: res.invoiceDate
           };
+          currentSheet.ctx.invoiceFile = { dataUrl: reader.result, name: file.name, size: file.size };
         }
         renderMagInvoiceReview(res);
       } catch (e) {
