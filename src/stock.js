@@ -431,6 +431,18 @@ export async function validateOperation(db, operationId, actorEmail) {
   }
 
   const now = new Date();
+  // DATA DOKUMENTU, a nie chwila kliknięcia. `now` zostaje znacznikiem technicznym
+  // (updatedAt), ale ruchy dostają datę z dokumentu — inaczej towar przyjęty w piątek,
+  // a wprowadzony w poniedziałek, siada w poniedziałek i raport za piątek go nie widzi.
+  // To ta sama data, którą czyta „stan na dzień" (src/stock-history.js).
+  const zDokumentu = op.scheduledAt ? new Date(op.scheduledAt) : null;
+  if (zDokumentu && Number.isNaN(zDokumentu.getTime())) throw new Error('Niepoprawna data operacji');
+  if (zDokumentu && zDokumentu.getTime() > Date.now()) {
+    throw new Error('Data operacji nie może być z przyszłości');
+  }
+  // Brak daty = stare wersje robocze sprzed wprowadzenia tego pola. Nie blokujemy ich,
+  // tylko wpisujemy chwilę zatwierdzenia, czyli dotychczasowe zachowanie.
+  const kiedy = zDokumentu || now;
   const affected = new Set();
 
   // Przyjęcie: zapamiętaj stan/partie sprzed ruchów, by ochronić istniejącą ilość
@@ -542,7 +554,7 @@ export async function validateOperation(db, operationId, actorEmail) {
         operationId: String(op._id),
         actorEmail,
         note: op.reference,
-        doneAt: now
+        doneAt: kiedy
       });
       affected.add(itemCode);
       adjustmentNetDiff.set(itemCode, (adjustmentNetDiff.get(itemCode) || 0) + diff);
@@ -575,7 +587,7 @@ export async function validateOperation(db, operationId, actorEmail) {
         operationId: String(op._id),
         actorEmail,
         note: op.reference,
-        doneAt: now
+        doneAt: kiedy
       });
       await applyMove(db, {
         itemCode: targetCode,
@@ -586,7 +598,7 @@ export async function validateOperation(db, operationId, actorEmail) {
         operationId: String(op._id),
         actorEmail,
         note: op.reference,
-        doneAt: now
+        doneAt: kiedy
       });
       affected.add(sourceCode);
       affected.add(targetCode);
@@ -631,7 +643,7 @@ export async function validateOperation(db, operationId, actorEmail) {
         operationId: String(op._id),
         actorEmail,
         note: op.reference,
-        doneAt: now
+        doneAt: kiedy
       });
       affected.add(ln.itemCode);
     }
@@ -639,7 +651,7 @@ export async function validateOperation(db, operationId, actorEmail) {
 
   await ops.updateOne(
     { _id: op._id },
-    { $set: { state: 'done', doneAt: now, doneByEmail: actorEmail, updatedAt: now } }
+    { $set: { state: 'done', doneAt: kiedy, doneByEmail: actorEmail, updatedAt: now } }
   );
   for (const code of affected) await refreshItemCache(db, code);
 
