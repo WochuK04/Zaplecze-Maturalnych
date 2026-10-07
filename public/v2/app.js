@@ -2519,12 +2519,20 @@
     const list = $('[data-mag-prod-list]');
     const render = (items) => {
       if (!items.length) { list.innerHTML = emptyBlock('Brak produktów', ''); return; }
-      const cols = [{ t: 'Kod' }, { t: 'Nazwa' }, { t: 'Kategoria' }, { t: 'Ilość', num: true }, { t: 'Partie', num: true }, { t: 'Wartość', num: true }];
+      // Cena jednostkowa stoi OBOK liczby partii nie przez przypadek: przy kilku
+      // partiach to średnia ważona, a nie cena jednego zakupu, i sąsiedztwo kolumny
+      // „Partie" od razu to pokazuje. Nazwa kolumny jak w raporcie „stan na dzień".
+      const cols = [{ t: 'Kod' }, { t: 'Nazwa' }, { t: 'Kategoria' }, { t: 'Ilość', num: true }, { t: 'Partie', num: true }, { t: 'Cena jedn.', num: true }, { t: 'Wartość', num: true }];
       if (isAdmin) cols.push({ t: '', num: true });
       list.innerHTML = tableHTML(cols,
         items.map((p) => ({ cells: [
           { v: p.itemCode, cls: 'mono-cell' }, { v: p.name }, { html: `<span class="chip chip-grey">${esc(p.category)}</span>` },
-          { v: fmtQty(p.quantity, p.unit), cls: 'num' }, { v: p.batchCount ? fmtInt(p.batchCount) : '—', cls: 'num' }, { v: p.totalValue ? fmtMoney(p.totalValue) : '—', cls: 'num' }
+          { v: fmtQty(p.quantity, p.unit), cls: 'num' },
+          { v: p.batchCount ? fmtInt(p.batchCount) : '—', cls: 'num' },
+          // Myślnik, a nie „0,00 zł": brak ceny znaczy „nie znamy kosztu zakupu",
+          // a nie „towar jest darmowy". Tak samo zachowuje się kolumna Wartość.
+          { v: p.avgUnitPrice ? fmtMoney(p.avgUnitPrice) : '—', cls: 'num mut' },
+          { v: p.totalValue ? fmtMoney(p.totalValue) : '—', cls: 'num' }
         ].concat(isAdmin ? [{ html: `<button class="btn btn-ghost btn-sm" data-prod-edit="${esc(p.itemCode)}">Edytuj</button>`, cls: 'num' }] : []) }))
       );
     };
@@ -2545,8 +2553,20 @@
     const items = state.mag.products || [];
     const q = (($('[data-mag-prod-search]') || {}).value || '').toLowerCase().trim();
     const rows = items.filter((p) => !q || (p.name || '').toLowerCase().includes(q) || (p.itemCode || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q));
-    const csv = [['Kod', 'Nazwa', 'Kategoria', 'Ilość', 'Wartość']].concat(
-      rows.map((p) => [p.itemCode, p.name, p.category, p.quantity, p.totalValue])
+    // Kwoty zawsze z dwoma miejscami — także gdy wypadają na okrągło (0 → „0.00"),
+    // żeby kolumna była jednorodna i dała się zsumować bez poprawiania formatu.
+    const kwota = (n) => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2);
+    // Nazwa kolumny mówi wprost „średnia", bo przy kilku partiach cena × ilość NIE
+    // odtworzy wartości co do grosza (1,75 × 450 = 787,50 przy wartości 787,08).
+    // Autorytatywna jest WARTOŚĆ — liczona z partii, nie z ceny. „Partii" pokazuje,
+    // kiedy w ogóle mamy do czynienia ze średnią, a kiedy z ceną jednego zakupu.
+    const csv = [['Kod', 'Nazwa', 'Kategoria', 'Ilość', 'Jednostka', 'Cena jedn. (średnia)', 'Wartość', 'Partii']].concat(
+      rows.map((p) => [
+        p.itemCode, p.name, p.category,
+        p.quantity, p.unit || 'szt.',
+        kwota(p.avgUnitPrice), kwota(p.totalValue),
+        p.batchCount != null ? p.batchCount : ''
+      ])
     ).map((r) => r.map((c) => `"${String(c == null ? '' : c).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
