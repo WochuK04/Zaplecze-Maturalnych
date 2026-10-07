@@ -2499,9 +2499,10 @@
           { v: p.itemCode, cls: 'mono-cell' }, { v: p.name }, { html: `<span class="chip chip-grey">${esc(p.category)}</span>` },
           { v: fmtQty(p.quantity, p.unit), cls: 'num' },
           { v: p.batchCount ? fmtInt(p.batchCount) : '—', cls: 'num' },
-          // Myślnik, a nie „0,00 zł": brak ceny znaczy „nie znamy kosztu zakupu",
-          // a nie „towar jest darmowy". Tak samo zachowuje się kolumna Wartość.
-          { v: p.avgUnitPrice ? fmtMoney(p.avgUnitPrice) : '—', cls: 'num mut' },
+          // Realne ceny zakupu, nie średnia. Przy jednej partii to po prostu cena;
+          // przy kilku — rozbicie „ilość × cena", bo tak ten towar naprawdę leży
+          // w magazynie i tak zejdzie przy wydaniu.
+          batchesCell(p.priceBatches, null, `Ten produkt leży w ${p.batchCount} partiach cenowych`),
           { v: p.totalValue ? fmtMoney(p.totalValue) : '—', cls: 'num' }
         ].concat(isAdmin ? [{ html: `<button class="btn btn-ghost btn-sm" data-prod-edit="${esc(p.itemCode)}">Edytuj</button>`, cls: 'num' }] : []) }))
       );
@@ -2525,19 +2526,35 @@
     const rows = items.filter((p) => !q || (p.name || '').toLowerCase().includes(q) || (p.itemCode || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q));
     // Kwoty zawsze z dwoma miejscami — także gdy wypadają na okrągło (0 → „0.00"),
     // żeby kolumna była jednorodna i dała się zsumować bez poprawiania formatu.
+    //
+    // Jedna partia = jeden wiersz, tak samo jak w eksporcie „Ruchy w okresie".
+    // Uśrednianie ceny przy kilku transzach dawałoby kwotę, której nikt nie zapłacił,
+    // a sklejenie dwóch cen w jedną komórkę zepsułoby kolumnę liczbową w arkuszu.
+    // Przy takim rozbiciu sumy Ilości i Wartości nadal zgadzają się z magazynem.
     const kwota = (n) => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2);
-    // Nazwa kolumny mówi wprost „średnia", bo przy kilku partiach cena × ilość NIE
-    // odtworzy wartości co do grosza (1,75 × 450 = 787,50 przy wartości 787,08).
-    // Autorytatywna jest WARTOŚĆ — liczona z partii, nie z ceny. „Partii" pokazuje,
-    // kiedy w ogóle mamy do czynienia ze średnią, a kiedy z ceną jednego zakupu.
-    const csv = [['Kod', 'Nazwa', 'Kategoria', 'Ilość', 'Jednostka', 'Cena jedn. (średnia)', 'Wartość', 'Partii']].concat(
-      rows.map((p) => [
-        p.itemCode, p.name, p.category,
-        p.quantity, p.unit || 'szt.',
-        kwota(p.avgUnitPrice), kwota(p.totalValue),
-        p.batchCount != null ? p.batchCount : ''
-      ])
-    ).map((r) => r.map((c) => `"${String(c == null ? '' : c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const wiersze = [];
+    rows.forEach((p) => {
+      const partie = Array.isArray(p.priceBatches) ? p.priceBatches : [];
+      const wspolne = [p.itemCode, p.name, p.category];
+      if (!partie.length) {
+        // Stan bez znanego kosztu — cena pusta, nie zero, żeby nie udawać darmowego towaru.
+        wiersze.push([...wspolne, p.quantity, p.unit || 'szt.', '', kwota(0), '—']);
+        return;
+      }
+      partie.forEach((b, i) => {
+        wiersze.push([
+          ...wspolne,
+          b.qty, p.unit || 'szt.',
+          kwota(b.unitPrice),
+          kwota((Number(b.qty) || 0) * (Number(b.unitPrice) || 0)),
+          partie.length > 1 ? `${i + 1}/${partie.length}` : '1/1'
+        ]);
+      });
+    });
+    const csv = [['Kod', 'Nazwa', 'Kategoria', 'Ilość', 'Jednostka', 'Cena jedn.', 'Wartość', 'Partia']]
+      .concat(wiersze)
+      .map((r) => r.map((c) => `"${String(c == null ? '' : c).replace(/"/g, '""')}"`).join(','))
+      .join('\n');
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = 'produkty-magazyn.csv';
@@ -2952,12 +2969,17 @@
   // dostaje gwiazdkę. Warstwy są prawdziwe, ale opisują stan dzisiejszy, nie ten
   // z dnia ruchu — księgowość musi widzieć różnicę między jednym a drugim.
   const GWIAZDKA = '<span class="mut" title="Wycena FIFO z partii kartoteki — dokument odtworzony z historii Odoo nie niósł własnych cen.">*</span>';
-  function batchesCell(pb, source) {
+  // Rozbicie ceny na partie. Przy kilku transzach pokazujemy KAŻDĄ cenę osobno,
+  // zamiast uśredniać — średnia 1,75 zł przy partiach 1,68 i 1,82 to kwota, której
+  // nikt nigdy nie zapłacił, a rozchód i tak schodzi po cenach partii (FIFO).
+  // Ta sama komórka służy ruchom i kartotekom, stąd podpowiedź jako parametr.
+  function batchesCell(pb, source, tytul) {
     if (!pb || !pb.length) return { html: '<span class="mut">—</span>', cls: 'num' };
     const gw = source === 'fifo' ? GWIAZDKA : '';
     if (pb.length === 1) return { html: esc(fmtMoney(pb[0].unitPrice)) + gw, cls: 'num' };
-    const lines = pb.map((b) => `<div style="white-space:nowrap;">${fmtInt(b.qty)} × ${esc(fmtMoney(b.unitPrice))}</div>`).join('');
-    return { html: `<div style="display:flex;flex-direction:column;gap:2px;align-items:flex-end;" title="Ruch pokrywany z ${pb.length} partii cenowych">${lines}</div>`, cls: 'num' };
+    const lines = pb.map((b) => `<div style="white-space:nowrap;">${fmtQty(b.qty)} × ${esc(fmtMoney(b.unitPrice))}</div>`).join('');
+    const opis = tytul || `Ruch pokrywany z ${pb.length} partii cenowych`;
+    return { html: `<div style="display:flex;flex-direction:column;gap:2px;align-items:flex-end;" title="${esc(opis)}">${lines}</div>`, cls: 'num' };
   }
 
   async function renderPeriodReport() {

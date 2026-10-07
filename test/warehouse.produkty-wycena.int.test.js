@@ -78,26 +78,23 @@ test('wartość nie niesie ogona zmiennoprzecinkowego', async () => {
   assert.ok(String(p.totalValue).split('.')[1].length <= 2);
 });
 
-test('cena jednostkowa przy jednej partii to po prostu cena zakupu', async () => {
+test('ceny partii wracają do widoku — to z nich UI buduje kolumnę ceny', async () => {
   const { json } = await req(server, 'GET', '/warehouse/products');
-  assert.equal(wg(json, 'TOWA-FLOAT').avgUnitPrice, 2.65);
+  const p = wg(json, 'TOWA-FLOAT');
+  assert.equal(p.batchCount, 1);
+  assert.deepEqual(p.priceBatches.map(b => b.unitPrice), [2.65]);
 });
 
-test('przy dwóch partiach cena jednostkowa to średnia WAŻONA, nie arytmetyczna', async () => {
+test('przy dwóch partiach wracają OBIE ceny, bez uśredniania', async () => {
   const { json } = await req(server, 'GET', '/warehouse/products');
   const p = wg(json, 'GADZ-DWIE');
   assert.equal(p.quantity, 450);
   assert.equal(p.totalValue, 787.08);           // 228×1,68 + 222×1,82
-  assert.equal(p.avgUnitPrice, 1.75);           // 787,08 / 450
-  assert.equal(typeof p.avgUnitPrice, 'number', 'liczba, nie sformatowany tekst');
-  // UWAGA: przy kilku partiach cena × ilość NIE odtworzy wartości co do grosza
-  // (1,75 × 450 = 787,50, a wartość to 787,08). Średnia zaokrąglona do groszy nie
-  // może tego zrobić i nie jest to błąd — autorytatywna jest WARTOŚĆ, liczona
-  // z partii. Pilnujemy więc tylko, że średnia nie odjeżdża: mieści się między
-  // najtańszą a najdroższą transzą i odtwarza wartość z dokładnością do grosza
-  // na sztuce.
-  assert.ok(p.avgUnitPrice >= 1.68 && p.avgUnitPrice <= 1.82);
-  assert.ok(Math.abs(p.avgUnitPrice * p.quantity - p.totalValue) <= 0.01 * p.quantity);
+  // Obie ceny wracają osobno — widok pokazuje „228 × 1,68" i „222 × 1,82", a nie
+  // średnią 1,75, bo taka kwota nigdy nie padła. Suma iloczynów musi dać wartość.
+  assert.deepEqual(p.priceBatches.map(b => [b.qty, b.unitPrice]), [[228, 1.68], [222, 1.82]]);
+  const zPartii = p.priceBatches.reduce((s, b) => s + b.qty * b.unitPrice, 0);
+  assert.equal(Math.round(zPartii * 100) / 100, p.totalValue);
   assert.equal(p.batchCount, 2, 'odbiorca musi wiedzieć, że to średnia z dwóch transz');
 });
 
@@ -106,7 +103,7 @@ test('pozycja bez partii: wartość i cena zero, ale ilość zachowana', async (
   const p = wg(json, 'GADZ-BEZCENY');
   assert.equal(p.quantity, 421);
   assert.equal(p.totalValue, 0);
-  assert.equal(p.avgUnitPrice, 0);
+  assert.deepEqual(p.priceBatches, []);
   assert.equal(p.batchCount, 0);
 });
 
@@ -116,7 +113,7 @@ test('ilość ułamkowa (kilogramy) nie psuje ceny jednostkowej', async () => {
   assert.equal(p.quantity, 9.5);
   assert.equal(p.unit, 'kg');
   assert.equal(p.totalValue, 339.15);           // 9,5 × 35,70
-  assert.equal(p.avgUnitPrice, 35.7);
+  assert.deepEqual(p.priceBatches.map(b => b.unitPrice), [35.7]);
 });
 
 test('suma wartości wszystkich pozycji też jest w groszach', async () => {

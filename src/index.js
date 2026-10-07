@@ -1235,10 +1235,9 @@ app.get('/warehouse/products', requireAuth, requireWarehouseRead, async (_req, r
         quantity: qty,
         batchCount: batches.length,
         totalValue,
-        // Średnia ważona ceny zakupu — ta sama arytmetyka co w raporcie wyceny
-        // (computeValuation). Przy kilku partiach to ŚREDNIA, nie cena jednej transzy;
-        // `batchCount` mówi odbiorcy, kiedy tak jest.
-        avgUnitPrice: qty > 0 ? round2(totalValue / qty) : 0,
+        // Cen jednostkowych NIE uśredniamy: widok Produktów pokazuje ceny poszczególnych
+        // partii (`priceBatches`), bo średnia przy dwóch transzach to kwota, której nikt
+        // nie zapłacił, a rozchód i tak schodzi po cenach partii (FIFO).
         priceBatches: batches
       };
     })
