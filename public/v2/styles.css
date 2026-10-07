@@ -603,3 +603,32 @@ details.op-locations{border:1px solid var(--line-3);border-radius:10px;padding:9
 details.op-locations>summary{list-style:none;user-select:none;}
 details.op-locations>summary::-webkit-details-marker{display:none;}
 details.op-locations[open]>summary{margin-bottom:2px;}
+
+/* --- Wyszukiwarka produktu w pozycjach operacji -------------------------------
+   Zastępuje natywny <select>: przy stu kartotekach przeglądarka skacze tylko po
+   pierwszej literze, a u nas prawie wszystko zaczyna się od „G" albo „T". */
+.combo { position: relative; flex: 1; min-width: 140px; }
+.combo-input {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--line-2); border-radius: 9px;
+  padding: 9px 11px; font-size: 13.5px;
+  background: var(--surface); color: var(--ink); outline: none;
+}
+.combo-input:focus { border-color: var(--blue); }
+.combo-list {
+  /* `fixed`, bo .drawer-body ma overflow:auto i przycinałby listę.
+     Współrzędne ustawia comboPozycjonuj() w app.js. */
+  position: fixed; z-index: 90;
+  max-height: 280px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--line-2);
+  border-radius: 10px; box-shadow: 0 12px 32px rgba(0, 0, 0, .22); padding: 4px;
+}
+.combo-opt {
+  padding: 8px 10px; border-radius: 7px; font-size: 13px; cursor: pointer;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--ink);
+}
+.combo-opt:hover, .combo-opt[data-active="1"] { background: var(--line-4); }
+.combo-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--muted); }
+.combo-dim { color: var(--muted); }
+.combo-opt-new { color: var(--blue); font-weight: 600; }
+.combo-empty { padding: 10px; font-size: 13px; color: var(--muted); }

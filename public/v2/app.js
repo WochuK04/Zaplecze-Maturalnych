@@ -2067,24 +2067,18 @@
     if (!wrap) return;
     const pending = opEdit.pending || [];
     if (!pending.length) { wrap.innerHTML = ''; return; }
-    const items = (state.mag.formData || {}).items || [];
-    const opts = (sel) => '<option value="">— wskaż produkt —</option>' +
-      items.map((i) => `<option value="${esc(i.itemCode)}"${i.itemCode === sel ? ' selected' : ''}>${esc(i.itemCode)} · ${esc(i.name)}</option>`).join('');
     wrap.innerHTML = `
       <div style="margin-top:18px;padding:12px;border:1px solid var(--orange);border-radius:11px;background:var(--orange-soft);color:var(--orange-ink);">
         <div style="font-size:13px;font-weight:600;margin-bottom:4px;">Z faktury, bez produktu (${fmtInt(pending.length)})</div>
         <p class="sub" style="margin:0 0 10px;">Dokumentu nie da się zatwierdzić, dopóki każda z tych pozycji nie wskaże produktu albo nie zostanie odrzucona.</p>
         ${pending.map((l, i) => `<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
           <span style="flex:1;min-width:150px;font-size:13px;">${esc(l.invoiceName)} <span class="mut">· ${esc(String(l.quantity))} × ${esc(fmtMoney(l.unitPrice))}</span></span>
-          <select data-pending-code="${i}" style="flex:1;min-width:170px;">${opts('')}</select>
+          ${productComboHTML(i, 'pendingCode', '', { attr: 'data-pending-code', mode: 'plain' })}
           <button class="btn btn-ghost btn-sm" data-op-resolve="${i}">Dodaj</button>
           <button class="x-btn" data-op-resolve="drop:${i}" style="width:32px;height:32px;flex-shrink:0;" title="Odrzuć pozycję">×</button>
         </div>`).join('')}
       </div>`;
-    $$('[data-pending-code]').forEach((el) => {
-      el.style.border = '1px solid var(--line-2)'; el.style.borderRadius = '9px';
-      el.style.padding = '9px 11px'; el.style.fontSize = '13.5px'; el.style.background = 'var(--surface)'; el.style.color = 'var(--ink)';
-    });
+    bindProductCombos(wrap);
   }
 
   // „Dodaj" przenosi pozycję faktury do pozycji dokumentu (z ilością i ceną netto),
@@ -2163,7 +2157,6 @@
     // zdejmują, a wydanie/odpad mogą iść z innej lokalizacji niż WH/Stock).
     // Kod przed nazwą: produkty o identycznej nazwie to osobne kartoteki (trzy
     // „Długopis E8" z różnych partii), więc bez kodu nie da się wybrać właściwej.
-    const itemOpts = (sel, showStock, allowNew) => '<option value="">— wybierz produkt —</option>' + optList(items, (i) => i.itemCode, (i) => showStock ? `${i.itemCode} · ${i.name} (dostępne: ${i.available})` : `${i.itemCode} · ${i.name}`, sel) + (allowNew ? '<option value="__new__">＋ Nowy produkt…</option>' : '');
     wrap.innerHTML = opEdit.lines.map((l, i) => {
       // Cena przy przyjęciu; konwersja ma własny układ (patrz niżej).
       const extra = t === 'receipt'
@@ -2181,32 +2174,228 @@
       // jedno pole produktu i etykieta byłaby szumem.
       if (t === 'conversion') {
         return `<div style="display:flex;gap:8px;align-items:flex-end;margin-bottom:8px;flex-wrap:wrap;">
-          <label class="field" style="flex:1;min-width:140px;margin:0;"><span>Z czego (towar)</span><select data-line-field="itemCode" data-idx="${i}">${itemOpts(l.itemCode, true, false)}</select></label>
+          <label class="field" style="flex:1;min-width:140px;margin:0;"><span>Z czego (towar)</span>${productComboHTML(i, 'itemCode', l.itemCode, { showStock: true })}</label>
           <span aria-hidden="true" style="padding-bottom:10px;color:var(--muted);font-size:16px;">→</span>
-          <label class="field" style="flex:1;min-width:140px;margin:0;"><span>Na co (gadżet)</span><select data-line-field="targetItemCode" data-idx="${i}">${itemOpts(l.targetItemCode, false, true)}</select></label>
+          <label class="field" style="flex:1;min-width:140px;margin:0;"><span>Na co (gadżet)</span>${productComboHTML(i, 'targetItemCode', l.targetItemCode, { allowNew: true })}</label>
           <label class="field" style="margin:0;"><span>Ilość</span><span style="display:flex;align-items:center;gap:6px;">${qtyField}</span></label>
           <button class="x-btn" data-op-delline="${i}" style="width:32px;height:32px;flex-shrink:0;margin-bottom:1px;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
         </div>`;
       }
       return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap;">
-        <select data-line-field="itemCode" data-idx="${i}" style="flex:1;min-width:140px;">${itemOpts(l.itemCode, false, t === 'receipt')}</select>
+        ${productComboHTML(i, 'itemCode', l.itemCode, { allowNew: t === 'receipt' })}
         ${qtyField}${extra}
         <button class="x-btn" data-op-delline="${i}" style="width:32px;height:32px;flex-shrink:0;"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg></button>
       </div>`;
     }).join('');
-    // style line inputs
-    $$('[data-line-field]').forEach((el) => { el.style.border = '1px solid var(--line-2)'; el.style.borderRadius = '9px'; el.style.padding = '9px 11px'; el.style.fontSize = '13.5px'; el.style.background = 'var(--surface)'; el.style.color = 'var(--ink)'; el.style.outline = 'none'; });
-    // Konwersja: wybór „＋ Nowy produkt…" w celu → szybkie utworzenie produktu.
-    $$('[data-line-field="targetItemCode"]', wrap).forEach((sel) => sel.addEventListener('change', () => {
-      if (sel.value === '__new__') { sel.value = ''; openQuickProduct(Number(sel.dataset.idx), 'targetItemCode'); }
-    }));
-    // Przyjęcie: „＋ Nowy produkt…" zakłada kartotekę bez wychodzenia z dokumentu —
-    // przy dostawie regularnie przychodzi towar, którego jeszcze nie ma w bazie.
-    // Poza tym zmiana produktu zmienia jednostkę przy polu ilości, więc przerysowujemy.
-    $$('[data-line-field="itemCode"]', wrap).forEach((sel) => sel.addEventListener('change', () => {
-      if (sel.value === '__new__') { sel.value = ''; openQuickProduct(Number(sel.dataset.idx), 'itemCode'); return; }
-      readOpLinesFromDOM(); renderOpLines();
-    }));
+    // Pola liczbowe stylujemy inline (pola produktu mają własną klasę .combo-input).
+    // `type=hidden` pomijamy — to nośnik wybranego kodu, nie widoczne pole.
+    $$('[data-line-field]').forEach((el) => {
+      if (el.type === 'hidden') return;
+      el.style.border = '1px solid var(--line-2)'; el.style.borderRadius = '9px';
+      el.style.padding = '9px 11px'; el.style.fontSize = '13.5px';
+      el.style.background = 'var(--surface)'; el.style.color = 'var(--ink)'; el.style.outline = 'none';
+    });
+    bindProductCombos(wrap);
+  }
+
+  // --- Wyszukiwarka produktu (combobox) --------------------------------------
+  //
+  // Natywny <select> przy stu kartotekach jest bezużyteczny: przeglądarka przeskakuje
+  // po PIERWSZEJ literze, a u nas prawie każda pozycja zaczyna się od „G" albo „T",
+  // bo to prefiks kategorii. Zgłoszenie z Magazynu brzmiało wprost: „schodzi pół roku".
+  // Dlatego pole produktu to input filtrujący po kodzie I nazwie, obsługiwany
+  // klawiaturą. Wybrany kod trzyma ukryty input `data-line-field`, więc
+  // readOpLinesFromDOM czyta pozycje dokładnie tak jak wcześniej.
+
+  // „ł" to osobny znak Unicode — NFD go nie rozłoży, a bez tego „Długopis" nie
+  // znalazłby się po wpisaniu „dlugopis".
+  const comboNorm = (v) => String(v || '').toLowerCase()
+    .replace(/ł/g, 'l').normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+  // Dopasowanie wielotokenowe: „dlug e8" ma trafić w „G001 · Długopis E8".
+  // Zwraca -1, gdy którykolwiek token nie pasuje; wyżej punktowane trafienia idą górą.
+  function comboScore(zapytanie, kod, nazwa) {
+    const q = comboNorm(zapytanie).trim();
+    if (!q) return 10;
+    const tokeny = q.split(/\s+/).filter(Boolean);
+    const heslo = comboNorm(kod + ' ' + nazwa);
+    if (!tokeny.every((t) => heslo.includes(t))) return -1;
+    const k = comboNorm(kod); const n = comboNorm(nazwa); const pierwszy = tokeny[0];
+    if (k === q) return 100;              // wpisany dokładny kod
+    if (k.startsWith(pierwszy)) return 80; // kod od początku
+    if (n.startsWith(pierwszy)) return 60; // nazwa od początku
+    return 20;                             // gdzieś w środku
+  }
+
+  const comboLabel = (it, showStock) => it
+    ? `${it.itemCode} · ${it.name}${showStock ? ` (dostępne: ${it.available})` : ''}`
+    : '';
+
+  // Markup pola. `field` to nazwa czytana przez readOpLinesFromDOM
+  // (`itemCode` albo `targetItemCode`).
+  // `attr` to atrybut ukrytego pola, z którego czyta reszta kodu: pozycje dokumentu
+  // używają `data-line-field`, a niedopasowane wiersze faktury `data-pending-code`.
+  // `mode` mówi, czy po wyborze przerysować pozycje (zmiana produktu zmienia jednostkę).
+  function productComboHTML(idx, field, wybranyKod, { showStock = false, allowNew = false, attr = 'data-line-field', mode = 'line' } = {}) {
+    const items = (state.mag.formData || {}).items || [];
+    const wybrany = items.find((i) => i.itemCode === wybranyKod) || null;
+    const nosnik = attr === 'data-line-field'
+      ? `data-line-field="${field}" data-idx="${idx}"`
+      : `${attr}="${idx}"`;
+    return `<div class="combo" data-combo data-combo-field="${field}" data-combo-idx="${idx}"
+      data-combo-mode="${mode}"
+      data-combo-stock="${showStock ? '1' : ''}" data-combo-new="${allowNew ? '1' : ''}">
+      <input type="hidden" ${nosnik} value="${esc(wybranyKod || '')}">
+      <input type="text" class="combo-input" data-combo-input autocomplete="off" spellcheck="false"
+        placeholder="szukaj po kodzie lub nazwie…" value="${esc(comboLabel(wybrany, showStock))}">
+      <div class="combo-list" data-combo-list hidden></div>
+    </div>`;
+  }
+
+  function comboOptionsHTML(box, zapytanie) {
+    const items = (state.mag.formData || {}).items || [];
+    const showStock = box.dataset.comboStock === '1';
+    const trafienia = items
+      .map((i) => ({ i, p: comboScore(zapytanie, i.itemCode, i.name) }))
+      .filter((x) => x.p >= 0)
+      .sort((a, b) => b.p - a.p || a.i.itemCode.localeCompare(b.i.itemCode))
+      .slice(0, 60);
+    const nowy = box.dataset.comboNew === '1'
+      ? '<div class="combo-opt combo-opt-new" data-combo-opt="__new__">＋ Nowy produkt…</div>' : '';
+    if (!trafienia.length) {
+      return (zapytanie ? `<div class="combo-empty">Brak produktu pasującego do „${esc(zapytanie)}"</div>` : '') + nowy;
+    }
+    return trafienia.map(({ i }) =>
+      `<div class="combo-opt" data-combo-opt="${esc(i.itemCode)}"><span class="combo-code">${esc(i.itemCode)}</span> · ${esc(i.name)}${showStock ? ` <span class="combo-dim">(dostępne: ${esc(String(i.available))})</span>` : ''}</div>`
+    ).join('') + nowy;
+  }
+
+  function comboOpen(box, zapytanie) {
+    const lista = box.querySelector('[data-combo-list]');
+    lista.innerHTML = comboOptionsHTML(box, zapytanie);
+    lista.hidden = false;
+    const pierwsza = lista.querySelector('.combo-opt');
+    if (pierwsza) pierwsza.dataset.active = '1';
+    comboPozycjonuj(box, lista);
+  }
+
+  // `.drawer-body` ma `overflow:auto`, więc lista pozycjonowana absolutnie zostałaby
+  // przycięta — przy pozycji na dole dokumentu widać by było dwa wiersze. Dlatego
+  // `position:fixed` i współrzędne liczone z pola; gdy pod spodem brakuje miejsca,
+  // lista otwiera się w górę.
+  function comboPozycjonuj(box, lista) {
+    const pole = box.querySelector('[data-combo-input]').getBoundingClientRect();
+    const zapas = 8;
+    const wysokosc = Math.min(lista.scrollHeight + 8, 280);
+    const podSpodem = window.innerHeight - pole.bottom - zapas;
+    const wGore = podSpodem < wysokosc && pole.top > podSpodem;
+    lista.style.left = `${pole.left}px`;
+    lista.style.width = `${pole.width}px`;
+    lista.style.maxHeight = `${Math.max(120, Math.min(280, wGore ? pole.top - zapas : podSpodem))}px`;
+    if (wGore) {
+      lista.style.top = 'auto';
+      lista.style.bottom = `${window.innerHeight - pole.top + 4}px`;
+    } else {
+      lista.style.bottom = 'auto';
+      lista.style.top = `${pole.bottom + 4}px`;
+    }
+  }
+
+  // Przewinięcie szuflady odkleiłoby listę od pola, bo pozycja jest `fixed` — więc
+  // przy każdym scrollu przeliczamy współrzędne. Zamykamy dopiero, gdy pole wyjedzie
+  // poza widok. (Zamykanie od razu było błędem: focus() potrafi sam przewinąć
+  // kontener, więc lista znikała w tej samej chwili, w której się otwierała.)
+  document.addEventListener('scroll', () => {
+    $$('[data-combo]').forEach((box) => {
+      const lista = box.querySelector('[data-combo-list]');
+      if (!lista || lista.hidden) return;
+      const pole = box.querySelector('[data-combo-input]').getBoundingClientRect();
+      if (pole.bottom < 0 || pole.top > window.innerHeight) { comboClose(box); return; }
+      comboPozycjonuj(box, lista);
+    });
+  }, true);
+
+  function comboClose(box) {
+    const lista = box.querySelector('[data-combo-list]');
+    if (lista) { lista.hidden = true; lista.innerHTML = ''; }
+  }
+
+  // Zatwierdzenie wyboru. Zachowuje dotychczasowe zachowanie selecta: „＋ Nowy produkt…"
+  // otwiera sheet, a zmiana produktu przerysowuje pozycje (zmienia się jednostka).
+  function comboWybierz(box, kod) {
+    const idx = Number(box.dataset.comboIdx);
+    const field = box.dataset.comboField;
+    const hidden = box.querySelector('input[type="hidden"]');
+    comboClose(box);
+    if (kod === '__new__') {
+      hidden.value = '';
+      openQuickProduct(idx, field);
+      return;
+    }
+    hidden.value = kod;
+    // Pozycja dokumentu: przerysuj, bo zmiana produktu zmienia jednostkę przy ilości.
+    // Wybór przy wierszu faktury niczego nie przelicza — przerysowanie zgubiłoby wybór.
+    if (box.dataset.comboMode !== 'plain') { readOpLinesFromDOM(); renderOpLines(); return; }
+    box.querySelector('[data-combo-input]').value = comboLabel(
+      ((state.mag.formData || {}).items || []).find((i) => i.itemCode === kod) || null, false);
+  }
+
+  // Podpięcie zachowań do wszystkich pól produktu w podanym kontenerze.
+  function bindProductCombos(wrap) {
+    $$('[data-combo]', wrap).forEach((box) => {
+      const input = box.querySelector('[data-combo-input]');
+      const hidden = box.querySelector('input[type="hidden"]');
+      const showStock = box.dataset.comboStock === '1';
+      const etykieta = () => {
+        const items = (state.mag.formData || {}).items || [];
+        return comboLabel(items.find((i) => i.itemCode === hidden.value) || null, showStock);
+      };
+
+      input.addEventListener('focus', () => { input.select(); comboOpen(box, ''); });
+      input.addEventListener('input', () => comboOpen(box, input.value));
+
+      input.addEventListener('keydown', (e) => {
+        const lista = box.querySelector('[data-combo-list]');
+        // Escape ma zamknąć TYLKO listę. Globalny handler (patrz niżej w pliku) zamyka
+        // na Escape całą szufladę, co skasowałoby niezapisane pozycje dokumentu.
+        if (e.key === 'Escape') {
+          e.stopPropagation();
+          comboClose(box);
+          input.value = etykieta();
+          return;
+        }
+        if (lista.hidden && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) { e.stopPropagation(); comboOpen(box, input.value); return; }
+        const opcje = $$('.combo-opt', lista);
+        if (!opcje.length) return;
+        const teraz = opcje.findIndex((o) => o.dataset.active === '1');
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault(); e.stopPropagation();
+          const next = e.key === 'ArrowDown'
+            ? Math.min(opcje.length - 1, teraz + 1)
+            : Math.max(0, teraz - 1);
+          opcje.forEach((o) => delete o.dataset.active);
+          opcje[next].dataset.active = '1';
+          opcje[next].scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'Enter') {
+          e.preventDefault(); e.stopPropagation();
+          const wybor = opcje[teraz >= 0 ? teraz : 0];
+          if (wybor) comboWybierz(box, wybor.dataset.comboOpt);
+        }
+      });
+
+      // Wybór myszą: mousedown, bo blur inputa zdążyłby zamknąć listę przed kliknięciem.
+      box.querySelector('[data-combo-list]').addEventListener('mousedown', (e) => {
+        const opt = e.target.closest('[data-combo-opt]');
+        if (!opt) return;
+        e.preventDefault();
+        comboWybierz(box, opt.dataset.comboOpt);
+      });
+
+      // Wyjście z pola bez wyboru nie może gubić dotychczasowego produktu.
+      input.addEventListener('blur', () => {
+        setTimeout(() => { comboClose(box); input.value = etykieta(); }, 120);
+      });
+    });
   }
 
   // Szybkie utworzenie produktu-celu konwersji (POST /warehouse/products), po czym
