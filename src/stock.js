@@ -1230,7 +1230,7 @@ export function replenishmentDraft(row) {
 // cenowe FIFO), więc te same pieniądze widać w dwóch miejscach.
 // Pozycje bez partii: ilość = `quantity`, wartość = 0 zł (jak w widoku Produktów) —
 // po prostu nie znamy ich kosztu zakupu.
-function round2(n) {
+export function round2(n) {
   return Math.round((Number(n) || 0) * 100) / 100;
 }
 

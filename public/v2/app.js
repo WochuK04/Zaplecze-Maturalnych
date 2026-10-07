@@ -2515,8 +2515,20 @@
     const items = state.mag.products || [];
     const q = (($('[data-mag-prod-search]') || {}).value || '').toLowerCase().trim();
     const rows = items.filter((p) => !q || (p.name || '').toLowerCase().includes(q) || (p.itemCode || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q));
-    const csv = [['Kod', 'Nazwa', 'Kategoria', 'Ilość', 'Wartość']].concat(
-      rows.map((p) => [p.itemCode, p.name, p.category, p.quantity, p.totalValue])
+    // Kwoty zawsze z dwoma miejscami — także gdy wypadają na okrągło (0 → „0.00"),
+    // żeby kolumna była jednorodna i dała się zsumować bez poprawiania formatu.
+    const kwota = (n) => (Math.round((Number(n) || 0) * 100) / 100).toFixed(2);
+    // Nazwa kolumny mówi wprost „średnia", bo przy kilku partiach cena × ilość NIE
+    // odtworzy wartości co do grosza (1,75 × 450 = 787,50 przy wartości 787,08).
+    // Autorytatywna jest WARTOŚĆ — liczona z partii, nie z ceny. „Partii" pokazuje,
+    // kiedy w ogóle mamy do czynienia ze średnią, a kiedy z ceną jednego zakupu.
+    const csv = [['Kod', 'Nazwa', 'Kategoria', 'Ilość', 'Jednostka', 'Cena jedn. (średnia)', 'Wartość', 'Partii']].concat(
+      rows.map((p) => [
+        p.itemCode, p.name, p.category,
+        p.quantity, p.unit || 'szt.',
+        kwota(p.avgUnitPrice), kwota(p.totalValue),
+        p.batchCount != null ? p.batchCount : ''
+      ])
     ).map((r) => r.map((c) => `"${String(c == null ? '' : c).replace(/"/g, '""')}"`).join(',')).join('\n');
     const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
     const a = document.createElement('a');

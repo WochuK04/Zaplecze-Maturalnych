@@ -10,7 +10,7 @@ import { ObjectId } from 'mongodb';
 import { getDb, connectToDatabase, getMongoClient } from './db.js';
 import { collections, ensureIndexes } from './schema.js';
 import { setupPassport, requireAuth, requireAdmin, requireManager, requireWarehouseRead, requireWarehouseAccess, hasWarehouseAccess } from './auth.js';
-import { LOCATION_KINDS, OPERATION_TYPES, RESERVING_OP_TYPES, validateOperation, reverseOperation, nextReference, isOperationType, computeReplenishment, replenishmentDraft, reservedQuantities, checkReservation, isReorderScope, isProtectedLocation, slugifyLocationCode, cascadeItemCodeRename, computeValuation, summarizeMovesByKind, computeGiftThresholdReport, GIFT_VAT_THRESHOLD, computeStockHealth, recomputeQuants, refreshItemCache, computeAging, computeConversionHistory, applyMove, isStockableKind } from './stock.js';
+import { LOCATION_KINDS, OPERATION_TYPES, RESERVING_OP_TYPES, validateOperation, reverseOperation, nextReference, isOperationType, computeReplenishment, replenishmentDraft, reservedQuantities, checkReservation, isReorderScope, isProtectedLocation, slugifyLocationCode, cascadeItemCodeRename, computeValuation, summarizeMovesByKind, computeGiftThresholdReport, GIFT_VAT_THRESHOLD, computeStockHealth, recomputeQuants, refreshItemCache, computeAging, computeConversionHistory, applyMove, isStockableKind, round2 } from './stock.js';
 import { createOperationPdfDoc } from './operation-pdf.js';
 import { MANAGER_MAP } from './manager-map.js';
 import { licenseView } from './lib/licenses.js';
@@ -1219,7 +1219,10 @@ app.get('/warehouse/products', requireAuth, requireWarehouseRead, async (_req, r
     .map(it => {
       const batches = Array.isArray(it.priceBatches) ? it.priceBatches : [];
       const batchQty = batches.reduce((s, b) => s + (Number(b.qty) || 0), 0);
-      const totalValue = batches.reduce((s, b) => s + (Number(b.qty) || 0) * (Number(b.unitPrice) || 0), 0);
+      // Zaokrąglamy TUTAJ, nie u odbiorcy: suma iloczynów w liczbach zmiennoprzecinkowych
+      // potrafi dać 1579.3999999999999 i taka wartość lądowała wprost w eksporcie CSV.
+      const totalValue = round2(batches.reduce((s, b) => s + (Number(b.qty) || 0) * (Number(b.unitPrice) || 0), 0));
+      const qty = batches.length ? batchQty : (Number(it.quantity) || 0);
       return {
         id: String(it._id),
         itemCode: it.itemCode,
@@ -1229,9 +1232,13 @@ app.get('/warehouse/products', requireAuth, requireWarehouseRead, async (_req, r
         model: it.model || '',
         notes: it.notes || '',
         unit: normalizeUnit(it.unit),
-        quantity: batches.length ? batchQty : (Number(it.quantity) || 0),
+        quantity: qty,
         batchCount: batches.length,
         totalValue,
+        // Średnia ważona ceny zakupu — ta sama arytmetyka co w raporcie wyceny
+        // (computeValuation). Przy kilku partiach to ŚREDNIA, nie cena jednej transzy;
+        // `batchCount` mówi odbiorcy, kiedy tak jest.
+        avgUnitPrice: qty > 0 ? round2(totalValue / qty) : 0,
         priceBatches: batches
       };
     })
