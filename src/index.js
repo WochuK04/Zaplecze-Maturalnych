@@ -1067,6 +1067,9 @@ app.get('/warehouse/moves', requireAuth, requireWarehouseRead, async (req, res) 
       quantity: m.quantity,
       lot: m.lot || null,
       kind: m.kind || 'internal',
+      // Storno (cofnięcie operacji) niesie `kind` odwracanego ruchu, więc bez tej flagi
+      // raport policzyłby je jako kolejne przyjęcie albo wydanie. Patrz reverseOperation.
+      isReversal: !!m.isReversal,
       actorEmail: m.actorEmail || null,
       note: m.note || '',
       doneAt: m.doneAt || m.createdAt || null
@@ -1127,7 +1130,10 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
     });
   }
 
-  const summary = summarizeMovesByKind(warehouseMoves);
+  // Podsumowanie liczy wyłącznie ruchy pierwotne. Storno wliczone do „Przyjęć"
+  // podbijałoby licznik dokładnie tym, co zostało cofnięte.
+  const summary = summarizeMovesByKind(warehouseMoves.filter(m => !m.isReversal));
+  const stornoCount = warehouseMoves.filter(m => m.isReversal).length;
 
   // Zbierz unikalne kategorie do filtra w UI.
   const categories = [...new Set(
@@ -1166,6 +1172,9 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
       quantity: m.quantity,
       lot: m.lot || null,
       kind: m.kind || 'internal',
+      // Storno (cofnięcie operacji) niesie `kind` odwracanego ruchu, więc bez tej flagi
+      // raport policzyłby je jako kolejne przyjęcie albo wydanie. Patrz reverseOperation.
+      isReversal: !!m.isReversal,
       actorEmail: m.actorEmail || null,
       note: m.note || '',
       doneAt: m.doneAt || m.createdAt || null,
@@ -1183,6 +1192,7 @@ app.get('/warehouse/moves-report', requireAuth, requireWarehouseRead, async (req
     from: from.toISOString(),
     to: to.toISOString(),
     ...summary,
+    storno: stornoCount,
     categories,
     rows,
     // Ile wierszy wyceniono wtórnie (koszt kartoteki zamiast ceny z dokumentu) i ile
