@@ -4,7 +4,8 @@
 // (deterministycznie) -> tekst trafia do Perplexity z wymuszonym JSON-em
 // -> zwracamy listę pozycji, którą admin przegląda przed zapisem.
 //
-// Perplexity jest OpenAI-kompatybilne, więc wołamy je zwykłym fetch-em (bez SDK).
+// Perplexity wołamy zwykłym fetch-em (bez SDK) przez Agent API (`/v1/agent`) — stary
+// endpoint Sonar `chat/completions` zwraca 403 `chat_completions_not_available`.
 //
 // Do czytania PDF-a używamy `unpdf` (nie pdf-parse) — ma build pdf.js przeznaczony
 // dla środowisk serverless/Node, bez zależności od API przeglądarki (DOMMatrix),
@@ -12,8 +13,9 @@
 
 import { getDocumentProxy, extractText } from 'unpdf';
 
-const PERPLEXITY_URL = 'https://api.perplexity.ai/chat/completions';
-const PERPLEXITY_MODEL = process.env.PERPLEXITY_MODEL || 'sonar-pro';
+const PERPLEXITY_URL = 'https://api.perplexity.ai/v1/agent';
+// ID w formacie `dostawca/model` (lista: docs.perplexity.ai/docs/agent-api/models).
+const PERPLEXITY_MODEL = process.env.PERPLEXITY_MODEL || 'perplexity/sonar';
 
 // Ostrożne limity – faktura to zwykle 1–2 strony. Chronią przed przypadkowym
 // wrzuceniem wielkiego pliku (a i tak Vercel tnie body ~4.5 MB).
@@ -197,20 +199,17 @@ async function callPerplexity(text, systemPrompt, schema, normalize) {
     throw err;
   }
 
+  // Bez `tools` agent nie szuka w sieci — faktura tego nie potrzebuje.
   const payload = {
     model: PERPLEXITY_MODEL,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `Tekst faktury:\n\n${text}` }
-    ],
+    instructions: systemPrompt,
+    input: `Tekst faktury:\n\n${text}`,
+    max_output_tokens: 8000,
     // Wymuszony JSON zgodny ze schematem (structured output).
     response_format: {
       type: 'json_schema',
-      json_schema: { schema }
-    },
-    // Faktura nie wymaga wyszukiwania w sieci – oszczędza czas i koszt.
-    web_search_options: { search_context_size: 'low' },
-    temperature: 0
+      json_schema: { name: 'invoice_items', schema }
+    }
   };
 
   let resp;
@@ -251,7 +250,12 @@ async function callPerplexity(text, systemPrompt, schema, normalize) {
     throw err;
   }
 
-  const content = data?.choices?.[0]?.message?.content;
+  const content = (Array.isArray(data?.output) ? data.output : [])
+    .filter(item => item?.type === 'message')
+    .flatMap(item => Array.isArray(item.content) ? item.content : [])
+    .filter(part => part?.type === 'output_text' && part.text)
+    .map(part => part.text)
+    .join('');
   if (!content) {
     const err = new Error('Perplexity nie zwróciło treści.');
     err.status = 502;
