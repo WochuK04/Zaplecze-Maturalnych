@@ -2489,12 +2489,20 @@
     const list = $('[data-mag-prod-list]');
     const render = (items) => {
       if (!items.length) { list.innerHTML = emptyBlock('Brak produktów', ''); return; }
-      const cols = [{ t: 'Kod' }, { t: 'Nazwa' }, { t: 'Kategoria' }, { t: 'Ilość', num: true }, { t: 'Partie', num: true }, { t: 'Wartość', num: true }];
+      // Cena jednostkowa stoi OBOK liczby partii nie przez przypadek: przy kilku
+      // partiach to średnia ważona, a nie cena jednego zakupu, i sąsiedztwo kolumny
+      // „Partie" od razu to pokazuje. Nazwa kolumny jak w raporcie „stan na dzień".
+      const cols = [{ t: 'Kod' }, { t: 'Nazwa' }, { t: 'Kategoria' }, { t: 'Ilość', num: true }, { t: 'Partie', num: true }, { t: 'Cena jedn.', num: true }, { t: 'Wartość', num: true }];
       if (isAdmin) cols.push({ t: '', num: true });
       list.innerHTML = tableHTML(cols,
         items.map((p) => ({ cells: [
           { v: p.itemCode, cls: 'mono-cell' }, { v: p.name }, { html: `<span class="chip chip-grey">${esc(p.category)}</span>` },
-          { v: fmtQty(p.quantity, p.unit), cls: 'num' }, { v: p.batchCount ? fmtInt(p.batchCount) : '—', cls: 'num' }, { v: p.totalValue ? fmtMoney(p.totalValue) : '—', cls: 'num' }
+          { v: fmtQty(p.quantity, p.unit), cls: 'num' },
+          { v: p.batchCount ? fmtInt(p.batchCount) : '—', cls: 'num' },
+          // Myślnik, a nie „0,00 zł": brak ceny znaczy „nie znamy kosztu zakupu",
+          // a nie „towar jest darmowy". Tak samo zachowuje się kolumna Wartość.
+          { v: p.avgUnitPrice ? fmtMoney(p.avgUnitPrice) : '—', cls: 'num mut' },
+          { v: p.totalValue ? fmtMoney(p.totalValue) : '—', cls: 'num' }
         ].concat(isAdmin ? [{ html: `<button class="btn btn-ghost btn-sm" data-prod-edit="${esc(p.itemCode)}">Edytuj</button>`, cls: 'num' }] : []) }))
       );
     };
