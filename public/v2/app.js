@@ -1966,7 +1966,7 @@
           <div class="kv"><div class="k">Kontakt</div><div class="v">${esc(op.supplierName || op.contact || '—')}</div></div>
           <div class="kv"><div class="k">Dokument</div><div class="v">${esc(op.sourceDocument || '—')}</div></div>
           <div class="kv"><div class="k">Utworzono</div><div class="v">${esc(fmtDay(op.createdAt) || '—')}</div></div>
-          <div class="kv"><div class="k">Zatwierdzono</div><div class="v">${esc(fmtDay(op.doneAt) || '—')}</div></div>
+          <div class="kv"><div class="k">${esc(etykietaDaty(op.type))}</div><div class="v">${esc(fmtDay(op.doneAt) || '—')}</div></div>
         </div>
         <div style="font-size:13px;font-weight:600;color:var(--ink);margin:4px 0 8px;">Pozycje (${(op.lines || []).length})</div>
         ${lines}
@@ -2038,6 +2038,7 @@
           ${blokLokalizacji}
           ${partyField}
           <label class="field"><span>${t === 'delivery' ? 'Odbiorca' : 'Kontakt'}</span><input data-op-h="contact" list="op-kontakty" value="${esc(op.contact || '')}" placeholder="${t === 'delivery' ? 'np. TI Warszawa, Turbo weekend VIP' : 'np. dostawca / pracownik'}"><datalist id="op-kontakty">${podpowiedziKontaktu(form, t)}</datalist></label>
+          <label class="field"><span>${esc(etykietaDaty(t))} *</span><input type="date" data-op-h="scheduledAt" data-op-date value="${esc(dataISO(op.scheduledAt))}" max="${esc(dzisISO())}"></label>
           <label class="field"><span>Dokument źródłowy</span><input data-op-h="sourceDocument" value="${esc(op.sourceDocument || '')}" placeholder="np. nr faktury"></label>
         </div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;"><div style="font-size:13px;font-weight:600;color:var(--ink);">Pozycje</div><button class="btn btn-ghost btn-sm" data-op-addline>+ Dodaj</button></div>
@@ -2427,7 +2428,36 @@
     await api('/warehouse/operations/' + encodeURIComponent(opEdit.id), { method: 'PATCH', body: JSON.stringify(body) });
     if (!silent) toast('Zapisano.');
   }
+  // Data dokumentu decyduje, w którym dniu ruch pojawia się w historii i w raporcie
+  // „stan na dzień", więc nie może zostać pusta ani wskazywać przyszłości.
+  const DATA_ETYKIETY = {
+    receipt: 'Data przyjęcia', delivery: 'Data dostawy', internal: 'Data przesunięcia',
+    scrap: 'Data odpadu', adjustment: 'Data inwentaryzacji', conversion: 'Data przetworzenia'
+  };
+  const etykietaDaty = (typ) => DATA_ETYKIETY[typ] || 'Data operacji';
+  const dzisISO = () => new Date().toISOString().slice(0, 10);
+  // Nowy dokument nie ma jeszcze daty — podstawiamy dziś, żeby pole nigdy nie było
+  // puste i żeby wymóg nie zamieniał się w przeszkodę przy zwykłym przyjęciu.
+  const dataISO = (v) => {
+    if (!v) return dzisISO();
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? dzisISO() : d.toISOString().slice(0, 10);
+  };
+
   async function validateOp() {
+    const pole = $('[data-op-date]');
+    if (pole && !pole.value) {
+      // Etykieta jest w mianowniku („Data przyjęcia"), więc wstawiamy ją w cudzysłów
+      // zamiast wklejać w zdanie — inaczej wychodzi „Podaj data przyjęcia".
+      toast(`Uzupełnij „${etykietaDaty(opEdit.type)}" — bez tej daty ruch trafi do historii pod złym dniem.`, true);
+      pole.focus();
+      return;
+    }
+    if (pole && pole.value > dzisISO()) {
+      toast('Data nie może być z przyszłości.', true);
+      pole.focus();
+      return;
+    }
     const btn = $('[data-op-validate]'); if (btn) { btn.disabled = true; btn.textContent = 'Zatwierdzanie…'; }
     try {
       await saveOp(true);
