@@ -2057,10 +2057,11 @@
       <div class="drawer-foot" style="flex-wrap:wrap;gap:8px;">
         <button class="btn btn-primary" style="flex:1;min-width:120px;" data-op-validate>Zatwierdź operację</button>
         <button class="btn btn-ghost" data-op-save>Zapisz</button>
-        ${op.state === 'draft'
+        ${op.state === 'draft' && !op.hasMoves
           // Wersję roboczą się odrzuca, nie „anuluje": dokument otwarty na próbę nie ma
           // prawa zostać na liście. Dokument w stanie „gotowe" był już komuś obiecany,
-          // więc tam zostaje anulowanie ze śladem.
+          // więc tam zostaje anulowanie ze śladem. Wersja robocza z historią ruchów
+          // (po „Cofnij do roboczej") też tylko się anuluje — backend nie pozwala jej skasować.
           ? '<button class="btn btn-danger-ghost" data-op-discard>Odrzuć</button>'
           : '<button class="btn btn-danger-ghost" data-op-cancel>Anuluj dokument</button>'}
       </div>`;
