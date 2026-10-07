@@ -3,8 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseProductRef, productCore, compareCodes, pickCanonical,
   mergeProducts, findConversionCandidates, mapLocation, classifyMove,
-  normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, mapUnit, normalizeStock
-} from '../src/odoo.js';
+  normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, mapUnit, normalizeStock, odnosnikImportu} from '../src/odoo.js';
 
 const d = (s) => new Date(s);
 
@@ -350,4 +349,36 @@ test('normalizeMoveLine przenosi jednostkę i ułamkową ilość', () => {
   assert.equal(l.qty, 0.5);
   assert.equal(l.jednostka, 'szt.');
   assert.equal(normalizeMoveLine({ produkt: '[T016] x', data: d('2026-08-24T10:00:00Z'), ilosc: 4.5, od: 'a', do: 'b', jednostka: 'kg' }).jednostka, 'kg');
+});
+
+// --- przestrzeń nazw odnośników importu -------------------------------------
+// Regresja z 07.10.2026: import historii wywrócił się w połowie zapisu na unikalnym
+// indeksie `reference`. Odoo nazywa przekazy `mag/IN/00057`, czyli tak samo jak
+// numeruje się dokument zakładany w Zapleczu — gdy w Odoo przybyły nowe przekazy,
+// jego numeracja weszła na numery już wydane przez licznik aplikacji.
+test('odnośnik importu trafia do przestrzeni odoo/ i nie zderza się z serią aplikacji', () => {
+  assert.equal(odnosnikImportu('mag/IN/00057'), 'odoo/mag/IN/00057');
+  assert.equal(odnosnikImportu('mag/OUT/00012'), 'odoo/mag/OUT/00012');
+  // Seria aplikacji (OPERATION_TYPES.prefix) to `mag/…` — po prefiksowaniu nie ma
+  // sposobu, żeby którykolwiek odnośnik importu zrównał się z odnośnikiem z aplikacji.
+  assert.ok(odnosnikImportu('mag/IN/00057').startsWith('odoo/'));
+  assert.notEqual(odnosnikImportu('mag/IN/00057'), 'mag/IN/00057');
+});
+
+test('prefiksowanie jest idempotentne — ponowny import nie dokłada kolejnego odoo/', () => {
+  assert.equal(odnosnikImportu('odoo/mag/IN/00057'), 'odoo/mag/IN/00057');
+  assert.equal(odnosnikImportu('odoo/CONV/00001'), 'odoo/CONV/00001');
+  assert.equal(odnosnikImportu(odnosnikImportu('mag/IN/1')), 'odoo/mag/IN/1');
+});
+
+test('puste i śmieciowe wejście nie produkuje odnośnika', () => {
+  assert.equal(odnosnikImportu(''), '');
+  assert.equal(odnosnikImportu(null), '');
+  assert.equal(odnosnikImportu(undefined), '');
+  assert.equal(odnosnikImportu('   '), '');
+});
+
+test('odnośnik importu zachowuje oryginalny numer Odoo w środku', () => {
+  // Numer ma zostać czytelny, żeby dało się zestawić dokument z Odoo bez bazy.
+  assert.match(odnosnikImportu('mag/IN/00057'), /00057$/);
 });

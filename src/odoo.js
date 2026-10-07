@@ -269,6 +269,27 @@ export function mapLocation(nazwa) {
   return null;
 }
 
+// Przestrzeń nazw odnośników dokumentów z importu.
+//
+// Odoo nazywa swoje przekazy `mag/IN/00057`, bo jego magazyn ma skrót „mag" — czyli
+// DOKŁADNIE tak samo, jak numeruje się dokument założony w Zapleczu. Dopóki obie serie
+// dzielą prefiks, kolizja jest kwestią czasu: licznik aplikacji wydaje numer, a przy
+// najbliższym imporcie Odoo sięga po ten sam i zapis wywraca się na unikalnym indeksie
+// `reference` — w połowie, zostawiając historię rozbitą.
+//
+// Dlatego dokumenty z importu dostają własną przestrzeń `odoo/…`, tak jak od początku
+// mają ją konwersje (`odoo/CONV`) i korekty (`odoo/ADJ`). Oryginalny numer zostaje
+// widoczny w środku odnośnika, żeby dało się go zestawić z Odoo bez zaglądania do bazy.
+export const PRZESTRZEN_IMPORTU = 'odoo';
+
+export function odnosnikImportu(referencjaOdoo) {
+  const s = String(referencjaOdoo ?? '').trim();
+  if (!s) return '';
+  // Idempotentnie: ponowny import nie ma dokładać kolejnego „odoo/".
+  if (s === PRZESTRZEN_IMPORTU || s.startsWith(PRZESTRZEN_IMPORTU + '/')) return s;
+  return `${PRZESTRZEN_IMPORTU}/${s}`;
+}
+
 // Rodzaj ruchu wg pary lokalizacji — ta sama taksonomia, co `stockMoves.kind`
 // w magazynie (receipt/delivery/adjustment/internal).
 export function classifyMove(fromKod, toKod) {
