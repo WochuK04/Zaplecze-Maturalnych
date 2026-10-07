@@ -2766,11 +2766,15 @@
     const cats = rep.categories || [];
     const catOpts = ['<option value="">Wszystkie kategorie</option>']
       .concat(cats.map((c) => `<option value="${esc(c)}"${p.category === c ? ' selected' : ''}>${esc(c)}</option>`)).join('');
-    const cnt = (k) => rows.filter((m) => m.kind === k).length;
+    // Storno nie jest przyjęciem ani wydaniem — to cofnięcie jednego z nich. Liczone
+    // razem z ruchami pierwotnymi podbijałoby licznik dokładnie tym, co anulowano.
+    const cnt = (k) => rows.filter((m) => m.kind === k && !m.isReversal).length;
+    const storno = rows.filter((m) => m.isReversal).length;
     const tiles = `<div class="mini-tiles">
       <div class="mini-tile"><div class="k">Przyjęcia</div><div class="v" style="color:#1B7A4F;">${fmtInt(cnt('receipt'))}</div></div>
       <div class="mini-tile"><div class="k">Wydania</div><div class="v" style="color:#BF1932;">${fmtInt(cnt('delivery') + cnt('scrap'))}</div></div>
-      <div class="mini-tile"><div class="k">Ruchów</div><div class="v" style="color:var(--heading);">${fmtInt(rows.length)}</div></div>
+      <div class="mini-tile"><div class="k">Ruchów</div><div class="v" style="color:var(--heading);">${fmtInt(rows.length - storno)}</div></div>
+      ${storno ? `<div class="mini-tile"><div class="k">Storno</div><div class="v" style="color:var(--orange-ink);">${fmtInt(storno)}</div></div>` : ''}
     </div>`;
     const toolbar = `<div class="period-toolbar" style="display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;margin:4px 0 14px;">
       <label class="field" style="margin:0;"><span>Od</span><input type="date" data-period-from value="${esc(p.from)}"></label>
@@ -2786,10 +2790,14 @@
         { v: m.itemCode, cls: 'mono-cell' },
         { v: m.itemName || '—' },
         { v: m.itemCategory || '—', cls: 'mut' },
-        { v: MOVE_KIND[m.kind] || m.kind },
-        { v: fmtInt(m.quantity), cls: 'num' },
+        { html: m.isReversal
+            ? `<span class="chip chip-orange">storno</span> <span class="mut">${esc(MOVE_KIND[m.kind] || m.kind)}</span>`
+            : esc(MOVE_KIND[m.kind] || m.kind) },
+        // Storno zdejmuje to, co ruch pierwotny wniósł — pokazujemy je ze znakiem minus,
+        // żeby kolumny dało się zsumować bez ręcznego odejmowania cofnięć.
+        { v: (m.isReversal ? '−' : '') + fmtInt(m.quantity), cls: 'num' },
         batchesCell(m.priceBatches, m.source),
-        { v: m.priceBatches && m.priceBatches.length ? fmtMoney(batchesValue(m.priceBatches)) : '—', cls: m.priceBatches && m.priceBatches.length ? 'num' : 'num mut' }
+        { v: m.priceBatches && m.priceBatches.length ? (m.isReversal ? '−' : '') + fmtMoney(batchesValue(m.priceBatches)) : '—', cls: m.priceBatches && m.priceBatches.length ? 'num' : 'num mut' }
       ] }))
     ) + (rep.estimatedRows ? `<p class="sub" style="margin:10px 0 0;">* ${fmtInt(rep.estimatedRows)} z ${fmtInt(rows.length)} ruchów wyceniono <strong>FIFO z partii kartoteki</strong> — to dokumenty odtworzone z historii Odoo, które nie niosą własnych cen. Partie opisują stan dzisiejszy, nie ten z dnia ruchu, więc wartość jest przybliżona. Ruchy z dokumentów zaplecza mają ceny wprost z dokumentu.</p>` : '')
       + (rep.unpricedRows ? `<p class="sub" style="margin:6px 0 0;">${fmtInt(rep.unpricedRows)} ruchów zostało bez ceny — ich kartoteki nie mają żadnej partii cenowej.</p>` : '')
@@ -2815,23 +2823,26 @@
     // Kolumna „Źródło ceny" istnieje dla księgowości: po samej kwocie nie widać, czy
     // przyszła z dokumentu, czy jest wyceną wtórną po koszcie kartoteki. Filtrem w
     // arkuszu da się jedno od drugiego oddzielić.
-    const header = ['Data', 'Kod', 'Nazwa', 'Kategoria', 'Ruch', 'Ilość', 'Cena jedn.', 'Wartość', 'Z lokalizacji', 'Do lokalizacji', 'Źródło ceny'];
+    const header = ['Data', 'Kod', 'Nazwa', 'Kategoria', 'Ruch', 'Storno', 'Ilość', 'Cena jedn.', 'Wartość', 'Z lokalizacji', 'Do lokalizacji', 'Źródło ceny'];
     const zrodlo = (m) => m.source === 'dokument' ? 'dokument'
       : m.source === 'fifo' ? 'FIFO z partii kartoteki'
       : 'brak ceny';
     const out = [header];
     rows.forEach((m) => {
-      const base = [fmtDay(m.doneAt), m.itemCode, m.itemName || '', m.itemCategory || '', MOVE_KIND[m.kind] || m.kind];
+      const base = [fmtDay(m.doneAt), m.itemCode, m.itemName || '', m.itemCategory || '', MOVE_KIND[m.kind] || m.kind, m.isReversal ? 'tak' : ''];
       const tail = [m.fromName || '', m.toName || '', zrodlo(m)];
       const pb = m.priceBatches || [];
       const money2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+      // Storno wychodzi z minusem, żeby suma kolumny w arkuszu była stanem netto
+      // okresu, a nie sumą ruchów powiększoną o te, które cofnięto.
+      const zn = m.isReversal ? -1 : 1;
       if (pb.length > 1) {
         // Rozdzielenie: po jednym wierszu na partię cenową.
-        pb.forEach((b) => out.push(base.concat([b.qty, b.unitPrice, money2((Number(b.qty) || 0) * (Number(b.unitPrice) || 0))], tail)));
+        pb.forEach((b) => out.push(base.concat([zn * (Number(b.qty) || 0), b.unitPrice, zn * money2((Number(b.qty) || 0) * (Number(b.unitPrice) || 0))], tail)));
       } else if (pb.length === 1) {
-        out.push(base.concat([m.quantity, pb[0].unitPrice, money2(batchesValue(pb))], tail));
+        out.push(base.concat([zn * (Number(m.quantity) || 0), pb[0].unitPrice, zn * money2(batchesValue(pb))], tail));
       } else {
-        out.push(base.concat([m.quantity, '', ''], tail));
+        out.push(base.concat([zn * (Number(m.quantity) || 0), '', ''], tail));
       }
     });
     const csv = out.map((r) => r.map((c) => `"${String(c == null ? '' : c).replace(/"/g, '""')}"`).join(',')).join('\n');
