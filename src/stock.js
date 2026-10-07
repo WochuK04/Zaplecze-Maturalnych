@@ -290,6 +290,10 @@ export async function cascadeItemCodeRename(db, oldCode, newCode) {
   await db.collection(collections.loanRequests).updateMany({ itemCode: o }, { $set: { itemCode: n } });
   await db.collection(collections.lots).updateMany({ itemCode: o }, { $set: { itemCode: n } });
   await db.collection(collections.reorderRules).updateMany({ scope: 'item', target: o }, { $set: { target: n } });
+  // Listy pakowania Wyjazdów trzymają link do produktu po `itemCode`. Bez tego
+  // przenumerowanie zrywa powiązanie po cichu: pozycja zostaje na liście, ale
+  // pakowanie przestaje zdejmować stan, bo wskazuje na kod, którego już nie ma.
+  await db.collection(collections.packingItems).updateMany({ itemCode: o }, { $set: { itemCode: n } });
 
   // Pozycje operacji: itemCode (każdy typ) oraz targetItemCode (gadżet-cel konwersji).
   const ops = db.collection(collections.stockOperations);

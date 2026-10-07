@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   parseProductRef, productCore, compareCodes, pickCanonical,
   mergeProducts, findConversionCandidates, mapLocation, classifyMove,
-  normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, mapUnit, normalizeStock, odnosnikImportu} from '../src/odoo.js';
+  normalizeMoveLine, detectConversions, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, mapUnit, normalizeStock, odnosnikImportu, dopasujKartoteke} from '../src/odoo.js';
 
 const d = (s) => new Date(s);
 
@@ -381,4 +381,50 @@ test('puste i śmieciowe wejście nie produkuje odnośnika', () => {
 test('odnośnik importu zachowuje oryginalny numer Odoo w środku', () => {
   // Numer ma zostać czytelny, żeby dało się zestawić dokument z Odoo bez bazy.
   assert.match(odnosnikImportu('mag/IN/00057'), /00057$/);
+});
+
+// --- dopasowanie kartoteki po przenumerowaniu kodu --------------------------
+// Magazyn stoi na kodach z Odoo (`G039`). Po przenumerowaniu na schemat aplikacji
+// (`GADZ-…`) kartoteki nie da się już znaleźć po kodzie z Odoo — a import szukał
+// wyłącznie po `itemCode`. Bez tego dopasowania najbliższa synchronizacja założyłaby
+// wszystkie sto pozycji drugi raz.
+test('kartoteka nieprzenumerowana dopasowuje się po itemCode', () => {
+  const baza = [{ itemCode: 'G039', name: 'Arkusz polski e8' }];
+  const r = dopasujKartoteke({ itemCode: 'G039', mergedCodes: [] }, baza);
+  assert.equal(r.wiodacy, baza[0]);
+  assert.equal(r.kodDocelowy, 'G039');
+  assert.deepEqual(r.doWchloniecia, []);
+});
+
+test('kartoteka przenumerowana dopasowuje się po odooCode i ZOSTAJE przy swoim kodzie', () => {
+  const baza = [{ itemCode: 'GADZ-MQTBGLJ5', odooCode: 'G039', name: 'Arkusz polski e8' }];
+  const r = dopasujKartoteke({ itemCode: 'G039', mergedCodes: [] }, baza);
+  assert.equal(r.wiodacy, baza[0], 'musi ją znaleźć mimo innego itemCode');
+  assert.equal(r.kodDocelowy, 'GADZ-MQTBGLJ5', 'import nie cofa przenumerowania');
+});
+
+test('brak kartoteki w bazie → produkt do założenia pod kodem z Odoo', () => {
+  const r = dopasujKartoteke({ itemCode: 'G099', mergedCodes: [] }, []);
+  assert.equal(r.wiodacy, null);
+  assert.equal(r.kodDocelowy, 'G099');
+});
+
+test('scalenie po przenumerowaniu: wchłaniane idą na kod lokalny, nie na kod Odoo', () => {
+  const baza = [
+    { itemCode: 'GADZ-MQTBGLJ5', odooCode: 'G039', name: 'Arkusz polski e8' },
+    { itemCode: 'G046', name: 'Arkusz polski e8' }
+  ];
+  const r = dopasujKartoteke({ itemCode: 'G039', mergedCodes: ['G046'] }, baza);
+  assert.equal(r.kodDocelowy, 'GADZ-MQTBGLJ5');
+  assert.deepEqual(r.doWchloniecia.map((d) => d.itemCode), ['G046']);
+});
+
+test('kod wiodący wygrywa z wchłanianym, niezależnie od kolejności w bazie', () => {
+  const baza = [
+    { itemCode: 'G046', name: 'Arkusz polski e8' },
+    { itemCode: 'G039', name: 'Arkusz polski e8' }
+  ];
+  const r = dopasujKartoteke({ itemCode: 'G039', mergedCodes: ['G046'] }, baza);
+  assert.equal(r.wiodacy.itemCode, 'G039');
+  assert.deepEqual(r.doWchloniecia.map((d) => d.itemCode), ['G046']);
 });

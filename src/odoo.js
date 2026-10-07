@@ -263,6 +263,27 @@ const MAPA_LOKALIZACJI = [
   [/strefa składowania|^wh\/stock$|^wh$|^mag$/i, 'WH/Stock']
 ];
 
+// Dopasowanie kartoteki Odoo do dokumentu już istniejącego w bazie.
+//
+// Kluczowe przy przenumerowaniu kodów: po zmianie `itemCode` na schemat aplikacji
+// (`GADZ-MQTBGLJ5`) kartoteka nie da się już znaleźć po kodzie z Odoo. Gdyby import
+// szukał tylko po `itemCode`, przy najbliższej synchronizacji NIE znalazłby jej
+// i założył wszystko drugi raz — sto duplikatów i rozjechany stan.
+//
+// Dlatego kartoteka niesie `odooCode` (odnośnik, z którego powstała) i dopasowanie
+// idzie po jednym ALBO drugim. `kodDocelowy` to kod, pod którym produkt ma dalej żyć:
+// lokalny, jeśli ktoś go przenumerował — import nie cofa decyzji podjętej w zapleczu.
+export function dopasujKartoteke(produkt, istniejace = []) {
+  const wiodacy = istniejace.find(
+    (d) => d.itemCode === produkt.itemCode || d.odooCode === produkt.itemCode
+  ) || null;
+  return {
+    wiodacy,
+    kodDocelowy: wiodacy ? wiodacy.itemCode : produkt.itemCode,
+    doWchloniecia: istniejace.filter((d) => d !== wiodacy)
+  };
+}
+
 export function mapLocation(nazwa) {
   const s = String(nazwa ?? '').trim();
   for (const [re, kod] of MAPA_LOKALIZACJI) if (re.test(s)) return kod;

@@ -27,7 +27,7 @@ import { fileURLToPath } from 'url';
 import { connectToDatabase, closeDb } from '../src/db.js';
 import { collections, ensureIndexes } from '../src/schema.js';
 import { cascadeItemCodeRename, recomputeQuants } from '../src/stock.js';
-import { mergeProducts, findConversionCandidates, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions } from '../src/odoo.js';
+import { mergeProducts, findConversionCandidates, tylkoAktywne, findDuplicateCodes, resolveCodeCollisions, dopasujKartoteke } from '../src/odoo.js';
 import { isWarehouseCategory } from '../src/lib/categories.js';
 import { zastosujPoprawki } from '../src/odoo-poprawki.js';
 import { wczytaj } from './odoo/zrodlo.mjs';
@@ -111,9 +111,12 @@ for (const k of findConversionCandidates(kartoteki)) {
 
 for (const p of produkty) {
   const wszystkieKody = [p.itemCode, ...p.mergedCodes];
-  const istniejace = await items.find({ itemCode: { $in: wszystkieKody } }).toArray();
-  const wiodacy = istniejace.find((d) => d.itemCode === p.itemCode) || null;
-  const doWchloniecia = istniejace.filter((d) => d.itemCode !== p.itemCode);
+  // Szukamy po kodzie Odoo ALBO po `odooCode` — kartoteka mogła zostać w zapleczu
+  // przenumerowana na schemat aplikacji i nie nosi już swojego kodu z Odoo.
+  const istniejace = await items.find({
+    $or: [{ itemCode: { $in: wszystkieKody } }, { odooCode: { $in: wszystkieKody } }]
+  }).toArray();
+  const { wiodacy, kodDocelowy, doWchloniecia } = dopasujKartoteke(p, istniejace);
 
   const pola = {
     name: p.name,
@@ -122,6 +125,9 @@ for (const p of produkty) {
     quantity: p.quantity,
     priceBatches: p.priceBatches,
     mergedCodes: p.mergedCodes,
+    // Odnośnik z Odoo zapisujemy ZAWSZE — to on, a nie `itemCode`, jest trwałym
+    // łącznikiem z Odoo i przeżywa przenumerowanie kodów w zapleczu.
+    odooCode: p.odooCode || p.itemCode,
     odooSyncAt: teraz,
     updatedAt: teraz
   };
@@ -141,8 +147,10 @@ for (const p of produkty) {
   raport.wchlonietoDokumentow += doWchloniecia.length;
 
   if (!ZAPISZ) {
-    if (wiodacy || doWchloniecia.length) raport.zaktualizowano.push({ itemCode: p.itemCode, nazwa: p.name, ilosc: p.quantity });
-    else raport.utworzono.push({ itemCode: p.itemCode, nazwa: p.name, ilosc: p.quantity });
+    const wiersz = { itemCode: kodDocelowy, nazwa: p.name, ilosc: p.quantity };
+    if (kodDocelowy !== p.itemCode) wiersz.odooCode = p.itemCode; // kartoteka przenumerowana
+    if (wiodacy || doWchloniecia.length) raport.zaktualizowano.push(wiersz);
+    else raport.utworzono.push(wiersz);
     continue;
   }
 
@@ -158,15 +166,16 @@ for (const p of produkty) {
   // wołamy recomputeQuants. Kaskada nie rusza samego `items` — to robimy tutaj.
   for (const d of doWchloniecia) {
     await db.collection(collections.quants).deleteMany({ itemCode: d.itemCode });
-    await cascadeItemCodeRename(db, d.itemCode, p.itemCode);
-    doPrzeliczenia.add(p.itemCode);
+    await cascadeItemCodeRename(db, d.itemCode, kodDocelowy);
+    doPrzeliczenia.add(kodDocelowy);
   }
   for (const d of doUsuniecia) await items.deleteOne({ _id: d._id });
 
   if (zachowany) {
-    await items.updateOne({ _id: zachowany._id }, { $set: { itemCode: p.itemCode, ...pola } });
+    await items.updateOne({ _id: zachowany._id }, { $set: { itemCode: kodDocelowy, ...pola } });
     raport.zaktualizowano.push({
-      itemCode: p.itemCode, nazwa: p.name, ilosc: p.quantity,
+      itemCode: kodDocelowy, nazwa: p.name, ilosc: p.quantity,
+      ...(kodDocelowy !== p.itemCode ? { odooCode: p.itemCode } : {}),
       ...(wiodacy ? {} : { przejeteZ: zachowany.itemCode })
     });
   } else {

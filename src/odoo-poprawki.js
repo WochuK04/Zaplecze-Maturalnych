@@ -27,7 +27,20 @@ export const BEZ_ODNOSNIKA = [
   // Szklana kula to rekwizyt, nie materiał zużywalny — należy do modułu Sprzęt,
   // którego import magazynu nie prowadzi. Pomijamy ją świadomie; kartotekę
   // sprzętową zakłada się raz, ręcznie.
-  { nazwa: 'Szklana kula', doSprzetu: true }
+  { nazwa: 'Szklana kula', doSprzetu: true },
+
+  // --- kartoteki ARCHIWALNE bez odnośnika, ale z historią ruchów ---------------
+  // Zarchiwizowane w Odoo i wyzerowane, więc do obrotu nie wracają. Mimo to przeszło
+  // przez nie 1332 sztuki towaru między listopadem 2025 a kwietniem 2026 i bez kodu
+  // ich ruchy wypadały z importu historii (linia nie miała się do czego podpiąć).
+  // Nadajemy im kody dalej w serii Odoo (ostatnie zajęte: G063, T042), żeby historia
+  // była kompletna. Kartoteki powstaną jako nieaktywne, ze stanem zero — dokładnie
+  // tak jak pozostałe archiwalne odtworzone z ruchów.
+  { nazwa: 'Długopisy matura stare', kod: 'G064', kategoria: 'gadżet' },
+  { nazwa: 'Krówki matura',          kod: 'G065', kategoria: 'gadżet' },
+  { nazwa: 'Kubki E8 Okienko',       kod: 'G066', kategoria: 'gadżet' },
+  { nazwa: 'Kubki Matura okienko',   kod: 'G067', kategoria: 'gadżet' },
+  { nazwa: 'Maturatorium ustne',     kod: 'T043', kategoria: 'Towar' }
 ];
 
 // --- jednostki, których Odoo nie zna --------------------------------------------
